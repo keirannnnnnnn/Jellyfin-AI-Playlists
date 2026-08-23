@@ -1,0 +1,26 @@
+services:
+  jellyfin-playlists:
+    build: .
+    container_name: jellyfin-playlists
+    restart: unless-stopped
+    ports:
+      # Exposes Web UI on port 8067
+      # If using Tailscale on the host, bind to Tailscale IP: "100.x.y.z:8067:8067"
+      - "8067:8067"
+    volumes:
+      # Persistent storage for SQLite database & uploaded playlist icons
+      - ./data:/app/data
+      # Optional: uncomment if mounting Windows Jellyfin Playback Reporting SQLite database directly
+      # - /c/ProgramData/Jellyfin/Server/data/playback_reporting.db:/data/playback_reporting.db:ro
+    environment:
+      - PORT=8067
+      # When connecting to Jellyfin Windows App from Docker, host.docker.internal resolves to the host machine
+      - JELLYFIN_URL=http://host.docker.internal:8096
+      - JELLYFIN_API_KEY=
+      - GEMINI_API_KEY=
+      - DEFAULT_PASSWORD=Password123
+      # Host binding inside container: 0.0.0.0 (docker port mapping handles Tailscale isolation on host)
+      - BIND_HOST=0.0.0.0
+    extra_hosts:
+      # Allows container to reach native Windows host apps (e.g. Jellyfin Windows App)
+      - "host.docker.internal:host-gateway"

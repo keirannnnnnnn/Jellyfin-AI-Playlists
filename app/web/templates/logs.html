@@ -1,0 +1,114 @@
+{% extends "base.html" %}
+
+{% block title %}Run Logs - Jellyfin Smart Playlists{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <div>
+    <h1 class="page-title">Run History & Logs</h1>
+    <p class="page-desc">Comprehensive history of scheduled and manual playlist sync runs with per-user details</p>
+  </div>
+</div>
+
+<div style="display: flex; flex-direction: column; gap: 1.25rem;">
+  {% for r in runs %}
+  <div class="card" style="padding: 1.5rem;">
+    <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 1rem; border-bottom: 1px solid var(--border-color); padding-bottom: 1rem;">
+      <div style="display: flex; align-items: center; gap: 0.75rem;">
+        <span style="font-size: 1.2rem;">
+          {% if r.status == 'completed' %}✅{% elif r.status == 'partial' %}⚠️{% elif r.status == 'running' %}⏳{% else %}❌{% endif %}
+        </span>
+        <div>
+          <div style="font-weight: 700; font-size: 1.05rem;">
+            Run <span style="font-family: monospace;">{{ r.run_id[:8] }}</span>
+            <span class="badge {% if r.status == 'completed' %}badge-green{% elif r.status == 'partial' %}badge-yellow{% elif r.status == 'running' %}badge-blue{% else %}badge-red{% endif %}">
+              {{ r.status }}
+            </span>
+            <span class="badge badge-purple">{{ r.trigger }}</span>
+          </div>
+          <div style="font-size: 0.8rem; color: var(--text-secondary); margin-top: 0.2rem;">
+            Started: {{ r.started_at }} &bull; Finished: {{ r.finished_at or 'In Progress' }} ({{ r.duration_str }})
+          </div>
+        </div>
+      </div>
+
+      <button class="btn btn-secondary btn-sm" onclick="toggleRunDetails('{{ r.run_id }}')">
+        Details & Entries ▾
+      </button>
+    </div>
+
+    <!-- Summary Counts -->
+    {% if r.summary_dict %}
+    <div style="display: flex; gap: 1.5rem; flex-wrap: wrap; margin-top: 1rem; font-size: 0.85rem; color: var(--text-secondary);">
+      <div>Generated Playlists: <strong style="color: #56d364;">{{ r.summary_dict.generated }}</strong></div>
+      <div>Skipped (No Activity): <strong style="color: #58a6ff;">{{ r.summary_dict.skipped_no_activity }}</strong></div>
+      <div>Skipped (Thin Pool): <strong style="color: #e3b341;">{{ r.summary_dict.skipped_thin_pool }}</strong></div>
+      <div>Errors: <strong style="color: #ff7b72;">{{ r.summary_dict.errors }}</strong></div>
+    </div>
+    {% endif %}
+
+    <!-- Detailed Entries Table -->
+    <div id="details-{{ r.run_id }}" style="display: none; margin-top: 1.25rem; border-top: 1px solid var(--border-color); padding-top: 1rem;">
+      <div style="font-weight: 600; font-size: 0.9rem; margin-bottom: 0.75rem;">Per-User / Per-Mix Breakdown:</div>
+      <div class="table-container">
+        <table>
+          <thead>
+            <tr>
+              <th>User</th>
+              <th>Mix Key</th>
+              <th>Status</th>
+              <th>Track Count</th>
+              <th>Details & Notes</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for entry in r.entries %}
+            <tr>
+              <td style="font-weight: 600;">{{ entry.username }}</td>
+              <td><span class="badge badge-purple">{{ entry.mix_key }}</span></td>
+              <td>
+                {% if entry.status == 'generated' %}
+                  <span class="badge badge-green">Generated</span>
+                {% elif entry.status == 'skipped_no_activity' %}
+                  <span class="badge badge-blue">No Activity</span>
+                {% elif entry.status == 'skipped_thin_pool' %}
+                  <span class="badge badge-yellow">Thin Pool</span>
+                {% else %}
+                  <span class="badge badge-red">Error</span>
+                {% endif %}
+              </td>
+              <td style="font-family: monospace;">{{ entry.track_count if entry.status == 'generated' else '-' }}</td>
+              <td style="font-size: 0.85rem; color: var(--text-secondary); max-width: 450px; word-break: break-word;">
+                {{ entry.detail }}
+              </td>
+            </tr>
+            {% else %}
+            <tr>
+              <td colspan="5" style="text-align: center; color: var(--text-muted); padding: 1.5rem;">
+                No specific entries recorded for this run.
+              </td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+  {% else %}
+  <div class="card" style="text-align: center; padding: 3rem; color: var(--text-muted);">
+    No past run records found. Trigger your first run from the <a href="/trigger" style="color: var(--accent);">Manual Trigger</a> page.
+  </div>
+  {% endfor %}
+</div>
+{% endblock %}
+
+{% block extra_scripts %}
+<script>
+function toggleRunDetails(runId) {
+  const el = document.getElementById('details-' + runId);
+  if (el) {
+    el.style.display = el.style.display === 'none' ? 'block' : 'none';
+  }
+}
+</script>
+{% endblock %}

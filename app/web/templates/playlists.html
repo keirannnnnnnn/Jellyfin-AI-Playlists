@@ -1,0 +1,93 @@
+{% extends "base.html" %}
+
+{% block title %}Playlists & Mixes - Jellyfin Smart Playlists{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <div>
+    <h1 class="page-title">Playlists & Mix Definitions</h1>
+    <p class="page-desc">Manage the 6 smart mix definitions, custom artwork icons, and filter rules</p>
+  </div>
+  <div>
+    <button id="btn-push-icons" class="btn btn-primary" onclick="pushIconsNow()">
+      🎨 Push Icons to All Jellyfin Playlists
+    </button>
+  </div>
+</div>
+
+<div id="push-icons-result" class="diag-output" style="display: none; margin-bottom: 1.5rem;"></div>
+
+<!-- Mix Definitions Cards -->
+<div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(360px, 1fr)); gap: 1.5rem; margin-bottom: 2.5rem;">
+  {% for m in mixes %}
+  <div class="mix-card">
+    <div>
+      <img src="/{{ m.icon_path }}?v=1" alt="{{ m.display_name }}" class="mix-icon-preview" onerror="this.src='/static/icons/pop.svg'">
+      <div style="margin-top: 0.5rem; text-align: center;">
+        <label class="btn btn-secondary btn-sm" style="cursor: pointer; font-size: 0.75rem; padding: 0.2rem 0.5rem;">
+          Upload Icon
+          <input type="file" accept="image/*" style="display: none;" onchange="handleIconUpload('{{ m.mix_key }}', this)">
+        </label>
+      </div>
+    </div>
+    <div class="mix-info">
+      <div style="display: flex; justify-content: space-between; align-items: flex-start;">
+        <div>
+          <div class="mix-title">{{ m.display_name }}</div>
+          <div class="mix-meta">
+            Type: <span class="badge badge-purple">{{ m.type }}</span> &bull; Target: {{ m.config.get('target_track_count', 40) }} tracks
+          </div>
+        </div>
+      </div>
+
+      <div style="margin-top: 0.75rem; font-size: 0.82rem; color: var(--text-secondary); background: var(--bg-primary); padding: 0.5rem 0.75rem; border-radius: 6px; border: 1px solid var(--border-color);">
+        {% if m.type == 'genre' %}
+          <strong>Genres / Aliases:</strong> {{ m.config.get('genres', []) | join(', ') }}
+        {% elif m.type == 'decade' %}
+          <strong>Years:</strong> {{ m.config.get('min_year') }} &ndash; {{ m.config.get('max_year') }}
+        {% elif m.type == 'driving' %}
+          <strong>BPM:</strong> {{ m.config.get('min_bpm') }}&ndash;{{ m.config.get('max_bpm') }} | <strong>AI Fallback:</strong> {{ 'Enabled' if m.config.get('use_gemini_fallback') else 'Disabled' }}
+        {% endif %}
+      </div>
+
+      <div style="margin-top: 0.75rem; display: flex; gap: 0.5rem;">
+        <button class="btn btn-secondary btn-sm" onclick='openEditMixModal("{{ m.mix_key }}", "{{ m.display_name }}", "{{ m.type }}", {{ m.config | tojson }})'>
+          ⚙️ Edit Rules & Config
+        </button>
+      </div>
+    </div>
+  </div>
+  {% endfor %}
+</div>
+
+<!-- Edit Mix Modal -->
+<div id="mix-modal" class="modal-overlay">
+  <div class="modal-card">
+    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1.25rem;">
+      <h3 style="font-size: 1.2rem; font-weight: 700;">Edit Mix Definition</h3>
+      <button class="btn btn-secondary btn-sm" onclick="closeMixModal()">✕</button>
+    </div>
+
+    <input type="hidden" id="modal-mix-key">
+    <input type="hidden" id="modal-mix-type">
+
+    <div class="form-group">
+      <label for="modal-display-name">Mix Display Name (Playlist Title)</label>
+      <input type="text" id="modal-display-name" required>
+    </div>
+
+    <div class="form-group">
+      <label for="modal-config-json">Configuration JSON (Aliases, Counts, Ranges)</label>
+      <textarea id="modal-config-json" rows="9" style="font-family: monospace; font-size: 0.85rem;"></textarea>
+      <div style="font-size: 0.75rem; color: var(--text-muted); margin-top: 0.25rem;">
+        Modify <code>target_track_count</code>, <code>genres</code>, <code>min_year</code>, <code>max_year</code>, <code>min_bpm</code>, <code>max_bpm</code>, etc.
+      </div>
+    </div>
+
+    <div style="display: flex; justify-content: flex-end; gap: 0.75rem; margin-top: 1.5rem;">
+      <button class="btn btn-secondary" onclick="closeMixModal()">Cancel</button>
+      <button class="btn btn-primary" onclick="saveMixFromModal()">Save Changes</button>
+    </div>
+  </div>
+</div>
+{% endblock %}

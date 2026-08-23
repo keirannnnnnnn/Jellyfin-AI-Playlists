@@ -1,0 +1,101 @@
+{% extends "base.html" %}
+
+{% block title %}Library Stats & Pools - Jellyfin Smart Playlists{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <div>
+    <h1 class="page-title">Stats & Candidate Pools</h1>
+    <p class="page-desc">Analyze library candidate pools and user listening trends</p>
+  </div>
+</div>
+
+<!-- Library Health Overview -->
+<div class="card-grid">
+  <div class="card">
+    <div class="stat-label">Total Audio Tracks</div>
+    <div class="stat-val">{{ total_songs }}</div>
+    <div style="font-size: 0.8rem; color: var(--text-secondary); margin-top: 0.35rem;">
+      Indexed from Jellyfin library
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="stat-label">BPM / Tempo Metadata</div>
+    <div class="stat-val" style="color: var(--cyan);">{{ bpm_songs_count }} <span style="font-size: 1rem; color: var(--text-secondary);">({{ bpm_percentage }}%)</span></div>
+    <div style="font-size: 0.8rem; color: var(--text-secondary); margin-top: 0.35rem;">
+      Tracks with populated BPM for Tier-1 Driving mix
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="stat-label">Active Users</div>
+    <div class="stat-val">{{ active_users_count }}</div>
+    <div style="font-size: 0.8rem; color: var(--text-secondary); margin-top: 0.35rem;">
+      Monitored with Playback Reporting
+    </div>
+  </div>
+</div>
+
+<!-- Candidate Pool Sizes by Mix -->
+<div style="margin-top: 2rem;">
+  <h2 style="font-size: 1.3rem; font-weight: 700; margin-bottom: 0.5rem;">Mix Candidate Pool Sizes (Library-wide)</h2>
+  <p style="font-size: 0.85rem; color: var(--text-secondary); margin-bottom: 1rem;">
+    Surfaces pool sizes across your library. If a mix falls below its target/minimum threshold, consider adjusting genre aliases or adding music.
+  </p>
+
+  <div class="table-container">
+    <table>
+      <thead>
+        <tr>
+          <th>Mix Display Name</th>
+          <th>Mix Key</th>
+          <th>Type</th>
+          <th>Total Candidates</th>
+          <th>Target Count</th>
+          <th>Pool Health</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for pool in pool_stats %}
+        <tr>
+          <td style="font-weight: 600;">{{ pool.display_name }}</td>
+          <td><span class="badge badge-purple">{{ pool.mix_key }}</span></td>
+          <td><span class="badge badge-blue">{{ pool.type }}</span></td>
+          <td style="font-size: 1.1rem; font-weight: 700;">{{ pool.candidate_count }}</td>
+          <td>{{ pool.target_count }}</td>
+          <td>
+            {% if pool.candidate_count >= pool.target_count %}
+              <span class="badge badge-green">Healthy</span>
+            {% elif pool.candidate_count >= pool.min_count %}
+              <span class="badge badge-yellow">Adequate ({{ pool.candidate_count }}/{{ pool.target_count }})</span>
+            {% else %}
+              <span class="badge badge-red">Thin Pool (&lt;{{ pool.min_count }})</span>
+            {% endif %}
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<!-- Top Genres in Library -->
+<div style="margin-top: 2.5rem;">
+  <h2 style="font-size: 1.3rem; font-weight: 700; margin-bottom: 0.5rem;">Top Genres in Library</h2>
+  <p style="font-size: 0.85rem; color: var(--text-secondary); margin-bottom: 1rem;">
+    Most frequent genre tags detected across indexed audio tracks
+  </p>
+
+  <div style="display: flex; flex-wrap: wrap; gap: 0.6rem;">
+    {% for g, count in top_genres %}
+      <div style="background: var(--bg-secondary); border: 1px solid var(--border-color); border-radius: 20px; padding: 0.4rem 0.9rem; font-size: 0.85rem; display: flex; align-items: center; gap: 0.5rem;">
+        <span>{{ g }}</span>
+        <span class="badge badge-purple">{{ count }}</span>
+      </div>
+    {% else %}
+      <div style="color: var(--text-muted); font-size: 0.85rem;">No genre tags found in library sync yet.</div>
+    {% endfor %}
+  </div>
+</div>
+{% endblock %}

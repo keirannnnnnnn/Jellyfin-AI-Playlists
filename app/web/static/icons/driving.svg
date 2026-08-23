@@ -1,0 +1,23 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <defs>
+    <linearGradient id="driveGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#FF416C" />
+      <stop offset="100%" stop-color="#FF4B2B" />
+    </linearGradient>
+  </defs>
+  <rect width="512" height="512" rx="100" fill="url(#driveGrad)"/>
+  <g fill="#FFFFFF" transform="translate(0, -20)">
+    <!-- Speedometer / Steering Dashboard -->
+    <path d="M120 280 A 140 140 0 1 1 392 280" fill="none" stroke="#FFFFFF" stroke-width="26" stroke-linecap="round"/>
+    <circle cx="256" cy="270" r="28" fill="#FFFFFF"/>
+    <!-- Speedometer Needle pointing high RPM/Speed -->
+    <path d="M256 270 L340 180" stroke="#FFFFFF" stroke-width="18" stroke-linecap="round"/>
+    <!-- Dash Ticks -->
+    <line x1="160" y1="240" x2="180" y2="230" stroke="#FFFFFF" stroke-width="12" stroke-linecap="round"/>
+    <line x1="200" y1="180" x2="215" y2="198" stroke="#FFFFFF" stroke-width="12" stroke-linecap="round"/>
+    <line x1="256" y1="150" x2="256" y2="175" stroke="#FFFFFF" stroke-width="12" stroke-linecap="round"/>
+    <line x1="312" y1="180" x2="297" y2="198" stroke="#FFFFFF" stroke-width="12" stroke-linecap="round"/>
+    <line x1="352" y1="240" x2="332" y2="230" stroke="#FFFFFF" stroke-width="12" stroke-linecap="round"/>
+  </g>
+  <text x="256" y="460" font-family="system-ui, -apple-system, sans-serif" font-weight="900" font-size="42" fill="#FFFFFF" text-anchor="middle" letter-spacing="4">DRIVING MIX</text>
+</svg>

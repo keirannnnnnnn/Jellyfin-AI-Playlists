@@ -1,0 +1,56 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>{% block title %}Jellyfin Smart Playlists{% endblock %}</title>
+  <link rel="stylesheet" href="/static/css/style.css">
+  {% block extra_head %}{% endblock %}
+</head>
+<body>
+  {% if is_authenticated %}
+  <header class="app-header">
+    <a href="/dashboard" class="brand">
+      <div class="brand-icon">🎵</div>
+      <span>Jellyfin Smart Playlists</span>
+    </a>
+    <nav class="nav-links">
+      <a href="/dashboard" class="nav-item {% if active_page == 'dashboard' %}active{% endif %}">Dashboard</a>
+      <a href="/playlists" class="nav-item {% if active_page == 'playlists' %}active{% endif %}">Playlists & Icons</a>
+      <a href="/trigger" class="nav-item {% if active_page == 'trigger' %}active{% endif %}">Manual Trigger</a>
+      <a href="/logs" class="nav-item {% if active_page == 'logs' %}active{% endif %}">Run Logs</a>
+      <a href="/stats" class="nav-item {% if active_page == 'stats' %}active{% endif %}">Stats & Pools</a>
+      <a href="/settings" class="nav-item {% if active_page == 'settings' %}active{% endif %}">Settings</a>
+      <a href="/logout" class="nav-item" style="color: var(--red);">Logout</a>
+    </nav>
+  </header>
+  {% endif %}
+
+  <main class="main-container">
+    {% if is_authenticated and gemini_status and gemini_status.status == 'error' %}
+    <div class="alert-banner alert-error">
+      <div class="alert-icon">⚠️</div>
+      <div class="alert-content">
+        <div class="alert-title">Google Gemini API Error Detected</div>
+        <div class="alert-message">
+          {{ gemini_status.last_error }}
+          <br>
+          <a href="/settings" style="color: #58a6ff; font-weight: 600; text-decoration: underline; margin-top: 0.3rem; display: inline-block;">
+            Open Settings to update Gemini API Key or Model &rarr;
+          </a>
+        </div>
+      </div>
+    </div>
+    {% endif %}
+
+    {% block content %}{% endblock %}
+  </main>
+
+  <footer>
+    Jellyfin Smart Playlist Generator &bull; Bound to Tailscale &bull; Port 8067
+  </footer>
+
+  <script src="/static/js/app.js"></script>
+  {% block extra_scripts %}{% endblock %}
+</body>
+</html>

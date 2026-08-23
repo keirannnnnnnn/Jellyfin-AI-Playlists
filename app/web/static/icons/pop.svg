@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <defs>
+    <linearGradient id="popGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#FF2E93" />
+      <stop offset="100%" stop-color="#FF8A00" />
+    </linearGradient>
+  </defs>
+  <rect width="512" height="512" rx="100" fill="url(#popGrad)"/>
+  <g fill="#FFFFFF">
+    <path d="M384 128v176c-11-7-24-11-38-11-41 0-74 27-74 60s33 60 74 60 74-27 74-60V192h48v-64h-84z"/>
+    <path d="M210 200c-8 0-15 3-21 8l-30-30c14-14 33-22 54-22 42 0 76 34 76 76 0 21-8 40-22 54l-30-30c5-6 8-13 8-21 0-19-16-35-35-35z" opacity="0.8"/>
+    <circle cx="160" cy="360" r="48"/>
+    <path d="M120 180l-20-20c-35 35-35 92 0 127l20-20c-24-24-24-63 0-87z" opacity="0.6"/>
+  </g>
+  <text x="256" y="470" font-family="system-ui, -apple-system, sans-serif" font-weight="900" font-size="44" fill="#FFFFFF" text-anchor="middle" letter-spacing="4">POP MIX</text>
+</svg>

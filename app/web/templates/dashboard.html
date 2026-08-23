@@ -1,0 +1,201 @@
+{% extends "base.html" %}
+
+{% block title %}Dashboard - Jellyfin Smart Playlists{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <div>
+    <h1 class="page-title">Dashboard</h1>
+    <p class="page-desc">Overview of your Jellyfin per-user smart playlist generation</p>
+  </div>
+  <a href="/trigger" class="btn btn-primary">
+    🚀 Run Generator Now
+  </a>
+</div>
+
+<!-- Overview Stats Cards -->
+<div class="card-grid">
+  <div class="card">
+    <div class="stat-label">Last Generation Run</div>
+    <div class="stat-val" style="font-size: 1.4rem; margin-top: 0.25rem;">
+      {% if last_run %}
+        {% if last_run.status == 'completed' %}
+          <span class="badge badge-green">Completed</span>
+        {% elif last_run.status == 'partial' %}
+          <span class="badge badge-yellow">Partial</span>
+        {% elif last_run.status == 'running' %}
+          <span class="badge badge-blue">Running</span>
+        {% else %}
+          <span class="badge badge-red">Failed</span>
+        {% endif %}
+      {% else %}
+        <span class="badge badge-blue">No runs yet</span>
+      {% endif %}
+    </div>
+    <div style="font-size: 0.8rem; color: var(--text-secondary); margin-top: 0.5rem;">
+      {% if last_run %}
+        {{ last_run.finished_at or last_run.started_at }} ({{ last_run.trigger }})
+      {% else %}
+        Ready for initial baseline run
+      {% endif %}
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="stat-label">Next Scheduled Run</div>
+    <div class="stat-val" style="font-size: 1.4rem; margin-top: 0.25rem; color: var(--cyan);">
+      {% if scheduler_status.job_enabled and scheduler_status.next_run_time %}
+        {{ scheduler_status.next_run_time[:16].replace('T', ' ') }}
+      {% elif not scheduler_status.job_enabled %}
+        <span style="color: var(--text-muted);">Disabled</span>
+      {% else %}
+        {{ '%02d:%02d' % (scheduler_status.hour, scheduler_status.minute) }} Daily
+      {% endif %}
+    </div>
+    <div style="font-size: 0.8rem; color: var(--text-secondary); margin-top: 0.5rem;">
+      Automatic daily sync via APScheduler
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="stat-label">Active Users</div>
+    <div class="stat-val">{{ active_user_count }} <span style="font-size: 1rem; color: var(--text-secondary);">/ {{ total_user_count }}</span></div>
+    <div style="font-size: 0.8rem; color: var(--text-secondary); margin-top: 0.5rem;">
+      Users enabled for smart playlist generation
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="stat-label">Configured Mixes</div>
+    <div class="stat-val">{{ mix_count }}</div>
+    <div style="font-size: 0.8rem; color: var(--text-secondary); margin-top: 0.5rem;">
+      Pop, Hip Hop, 2000s, 2010s, 2020s, Driving
+    </div>
+  </div>
+</div>
+
+<!-- Per-User Status Table -->
+<div style="margin-top: 2.5rem;">
+  <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem;">
+    <h2 style="font-size: 1.3rem; font-weight: 700;">User Playlists & Activity</h2>
+    <span style="font-size: 0.85rem; color: var(--text-secondary);">Listening events tracked via Playback Reporting</span>
+  </div>
+
+  <div class="table-container">
+    <table>
+      <thead>
+        <tr>
+          <th>User</th>
+          <th>Generation</th>
+          <th>Last Processed</th>
+          <th>Generated Playlists</th>
+          <th>Last Mix Status</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for u in users %}
+        <tr>
+          <td style="font-weight: 600;">
+            <div style="display: flex; align-items: center; gap: 0.5rem;">
+              <span>👤</span>
+              <span>{{ u.username }}</span>
+            </div>
+          </td>
+          <td>
+            <label style="display: flex; align-items: center; gap: 0.4rem; cursor: pointer; margin: 0;">
+              <input type="checkbox" {% if u.enabled %}checked{% endif %} onchange="toggleUserEnabled('{{ u.jellyfin_user_id }}', this.checked)">
+              <span style="font-size: 0.85rem;">{{ "Enabled" if u.enabled else "Disabled" }}</span>
+            </label>
+          </td>
+          <td style="color: var(--text-secondary); font-size: 0.85rem;">
+            {{ u.last_processed_at or "Never (Baseline pending)" }}
+          </td>
+          <td>
+            {% set user_states = user_playlist_map.get(u.jellyfin_user_id, []) %}
+            {% if user_states %}
+              <div style="display: flex; flex-wrap: wrap; gap: 0.35rem;">
+                {% for st in user_states %}
+                  <span class="badge badge-purple" title="{{ st.last_track_count }} tracks - generated at {{ st.last_generated_at }}">
+                    {{ st.mix_key }}: {{ st.last_track_count }} tracks
+                  </span>
+                {% endfor %}
+              </div>
+            {% else %}
+              <span style="color: var(--text-muted); font-size: 0.85rem;">No playlists yet</span>
+            {% endif %}
+          </td>
+          <td>
+            {% if u.last_processed_at %}
+              <span class="badge badge-green">Synced</span>
+            {% else %}
+              <span class="badge badge-yellow">Pending 1st Run</span>
+            {% endif %}
+          </td>
+        </tr>
+        {% else %}
+        <tr>
+          <td colspan="5" style="text-align: center; color: var(--text-muted); padding: 2rem;">
+            No users synced yet. Go to <a href="/settings" style="color: var(--accent);">Settings</a> to connect Jellyfin.
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<!-- Quick Recent Runs -->
+<div style="margin-top: 2.5rem;">
+  <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem;">
+    <h2 style="font-size: 1.3rem; font-weight: 700;">Recent Runs</h2>
+    <a href="/logs" style="font-size: 0.85rem; color: var(--accent); text-decoration: none;">View All History &rarr;</a>
+  </div>
+
+  <div class="table-container">
+    <table>
+      <thead>
+        <tr>
+          <th>Run ID</th>
+          <th>Trigger</th>
+          <th>Started</th>
+          <th>Duration</th>
+          <th>Status</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for r in recent_runs %}
+        <tr>
+          <td style="font-family: monospace; font-size: 0.85rem;">{{ r.run_id[:8] }}...</td>
+          <td><span class="badge badge-blue">{{ r.trigger }}</span></td>
+          <td style="font-size: 0.85rem;">{{ r.started_at }}</td>
+          <td style="font-size: 0.85rem;">
+            {% if r.finished_at %}
+              {{ r.duration_str }}
+            {% else %}
+              Running...
+            {% endif %}
+          </td>
+          <td>
+            {% if r.status == 'completed' %}
+              <span class="badge badge-green">Completed</span>
+            {% elif r.status == 'partial' %}
+              <span class="badge badge-yellow">Partial</span>
+            {% elif r.status == 'running' %}
+              <span class="badge badge-blue">Running</span>
+            {% else %}
+              <span class="badge badge-red">Failed</span>
+            {% endif %}
+          </td>
+        </tr>
+        {% else %}
+        <tr>
+          <td colspan="5" style="text-align: center; color: var(--text-muted); padding: 2rem;">
+            No runs recorded yet.
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{% endblock %}

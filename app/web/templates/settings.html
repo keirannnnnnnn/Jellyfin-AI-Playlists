@@ -1,0 +1,219 @@
+{% extends "base.html" %}
+
+{% block title %}Settings - Jellyfin Smart Playlists{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <div>
+    <h1 class="page-title">Settings</h1>
+    <p class="page-desc">Configure Jellyfin connection, Gemini AI, daily schedule, and UI security</p>
+  </div>
+</div>
+
+{% if success_message %}
+<div class="alert-banner alert-success">
+  <div class="alert-icon">✅</div>
+  <div class="alert-content">
+    <div class="alert-title">Settings Updated</div>
+    <div class="alert-message">{{ success_message }}</div>
+  </div>
+</div>
+{% endif %}
+
+{% if error_message %}
+<div class="alert-banner alert-error">
+  <div class="alert-icon">❌</div>
+  <div class="alert-content">
+    <div class="alert-title">Error</div>
+    <div class="alert-message">{{ error_message }}</div>
+  </div>
+</div>
+{% endif %}
+
+<div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(450px, 1fr)); gap: 1.5rem;">
+  <!-- Jellyfin Connection Card -->
+  <div class="card">
+    <div class="card-header">
+      <div class="card-title">🎵 Jellyfin Server Configuration</div>
+    </div>
+    <p style="font-size: 0.85rem; color: var(--text-secondary); margin-bottom: 1.25rem;">
+      Connect to your Jellyfin instance with an admin API key. (Note: For local Windows server without Docker, use <code>http://127.0.0.1:8096</code> or your local IP).
+    </p>
+
+    <form method="POST" action="/settings/jellyfin">
+      <div class="form-group">
+        <label for="jellyfin_url">Jellyfin Server URL</label>
+        <input type="text" id="jellyfin_url" name="jellyfin_url" value="{{ settings.jellyfin_url }}" placeholder="http://127.0.0.1:8096" required>
+      </div>
+
+      <div class="form-group">
+        <label for="jellyfin_api_key">Admin API Key</label>
+        <input type="password" id="jellyfin_api_key" name="jellyfin_api_key" value="{{ settings.jellyfin_api_key }}" placeholder="Enter Jellyfin API key..." required>
+        <div style="font-size: 0.75rem; color: var(--text-muted); margin-top: 0.25rem;">
+          Generate in Jellyfin Dashboard &rarr; API Keys.
+        </div>
+      </div>
+
+      <div class="form-group">
+        <label for="playback_db_path">Playback Reporting SQLite Path (Optional)</label>
+        <input type="text" id="playback_db_path" name="playback_db_path" value="{{ settings.playback_db_path }}" placeholder="e.g. C:\ProgramData\Jellyfin\Server\data\playback_reporting.db">
+        <div style="font-size: 0.75rem; color: var(--text-muted); margin-top: 0.25rem;">
+          Leave empty to query via the Playback Reporting API endpoint automatically.
+        </div>
+      </div>
+
+      <div style="display: flex; gap: 0.75rem; margin-top: 1.25rem;">
+        <button type="submit" class="btn btn-primary">Save Jellyfin Settings</button>
+        <button type="button" id="btn-test-jellyfin" class="btn btn-secondary" onclick="testJellyfinConnection()">Test Connection</button>
+      </div>
+    </form>
+
+    <div id="jellyfin-test-output" class="diag-output" style="display: none;"></div>
+  </div>
+
+  <!-- Google Gemini AI Card -->
+  <div class="card">
+    <div class="card-header">
+      <div class="card-title">✨ Google Gemini AI Configuration</div>
+    </div>
+    <p style="font-size: 0.85rem; color: var(--text-secondary); margin-bottom: 1.25rem;">
+      Used as Tier-3 fallback for the Driving Mix to judge song energy and road-trip fit.
+    </p>
+
+    <!-- Visible Status & Error Section -->
+    <div style="margin-bottom: 1.25rem; padding: 0.85rem; border-radius: 6px; background: var(--bg-tertiary); border: 1px solid var(--border-color);">
+      <div style="display: flex; justify-content: space-between; align-items: center;">
+        <span style="font-size: 0.85rem; font-weight: 600;">Gemini API Status:</span>
+        {% if gemini_status.status == 'ok' %}
+          <span class="badge badge-green">Operational</span>
+        {% elif gemini_status.status == 'error' %}
+          <span class="badge badge-red">Error Encountered</span>
+        {% else %}
+          <span class="badge badge-blue">Not Checked / Ready</span>
+        {% endif %}
+      </div>
+      {% if gemini_status.last_error %}
+      <div style="margin-top: 0.5rem; font-size: 0.8rem; color: #ff7b72; word-break: break-word; background: rgba(248, 81, 73, 0.1); padding: 0.5rem; border-radius: 4px;">
+        <strong>Error Details:</strong> {{ gemini_status.last_error }}
+      </div>
+      {% endif %}
+      {% if gemini_status.last_checked_at %}
+      <div style="margin-top: 0.35rem; font-size: 0.75rem; color: var(--text-muted);">
+        Last tested: {{ gemini_status.last_checked_at }}
+      </div>
+      {% endif %}
+    </div>
+
+    <form method="POST" action="/settings/gemini">
+      <div class="form-group">
+        <label for="gemini_api_key">Google Gemini API Key</label>
+        <input type="password" id="gemini_api_key" name="gemini_api_key" value="{{ settings.gemini_api_key }}" placeholder="AIzaSy...">
+        <div style="font-size: 0.75rem; color: var(--text-muted); margin-top: 0.25rem;">
+          Get an API key from <a href="https://aistudio.google.com/" target="_blank" style="color: var(--accent);">Google AI Studio</a>.
+        </div>
+      </div>
+
+      <div class="form-group">
+        <label for="gemini_model">Gemini Model</label>
+        <select id="gemini_model" name="gemini_model">
+          <option value="gemini-1.5-flash" {% if settings.gemini_model == 'gemini-1.5-flash' %}selected{% endif %}>gemini-1.5-flash (Fast, Recommended)</option>
+          <option value="gemini-2.5-flash" {% if settings.gemini_model == 'gemini-2.5-flash' %}selected{% endif %}>gemini-2.5-flash</option>
+          <option value="gemini-1.5-pro" {% if settings.gemini_model == 'gemini-1.5-pro' %}selected{% endif %}>gemini-1.5-pro</option>
+        </select>
+      </div>
+
+      <div style="display: flex; gap: 0.75rem; margin-top: 1.25rem;">
+        <button type="submit" class="btn btn-primary">Save Gemini Settings</button>
+        <button type="button" id="btn-test-gemini" class="btn btn-secondary" onclick="testGeminiConnection()">Test Gemini API</button>
+      </div>
+    </form>
+
+    <div id="gemini-test-output" class="diag-output" style="display: none;"></div>
+  </div>
+
+  <!-- Scheduler Card -->
+  <div class="card">
+    <div class="card-header">
+      <div class="card-title">⏰ Daily Run Schedule</div>
+    </div>
+    <p style="font-size: 0.85rem; color: var(--text-secondary); margin-bottom: 1.25rem;">
+      Configure the in-process APScheduler daily smart playlist refresh time.
+    </p>
+
+    <form method="POST" action="/settings/schedule">
+      <div style="display: flex; gap: 1rem;">
+        <div class="form-group" style="flex: 1;">
+          <label for="schedule_hour">Hour (0-23)</label>
+          <input type="number" id="schedule_hour" name="schedule_hour" min="0" max="23" value="{{ settings.schedule_hour }}" required>
+        </div>
+        <div class="form-group" style="flex: 1;">
+          <label for="schedule_minute">Minute (0-59)</label>
+          <input type="number" id="schedule_minute" name="schedule_minute" min="0" max="59" value="{{ settings.schedule_minute }}" required>
+        </div>
+      </div>
+
+      <div class="form-group" style="margin-top: 0.5rem;">
+        <label style="display: flex; align-items: center; gap: 0.5rem; cursor: pointer;">
+          <input type="checkbox" name="schedule_enabled" value="true" {% if settings.schedule_enabled == 'true' %}checked{% endif %}>
+          <span>Enable Daily Scheduled Run</span>
+        </label>
+      </div>
+
+      <div style="margin-top: 1.25rem;">
+        <button type="submit" class="btn btn-primary">Update Schedule</button>
+      </div>
+    </form>
+  </div>
+
+  <!-- UI Security & Password Card -->
+  <div class="card">
+    <div class="card-header">
+      <div class="card-title">🔒 UI Password & Security</div>
+    </div>
+    <p style="font-size: 0.85rem; color: var(--text-secondary); margin-bottom: 1.25rem;">
+      Update the master password gating this web interface.
+    </p>
+
+    <form method="POST" action="/settings/password">
+      <div class="form-group">
+        <label for="new_password">New Password</label>
+        <input type="password" id="new_password" name="new_password" required placeholder="Enter new password...">
+      </div>
+
+      <div class="form-group">
+        <label for="confirm_password">Confirm New Password</label>
+        <input type="password" id="confirm_password" name="confirm_password" required placeholder="Repeat new password...">
+      </div>
+
+      <div style="margin-top: 1.25rem;">
+        <button type="submit" class="btn btn-primary">Change Password</button>
+      </div>
+    </form>
+  </div>
+
+  <!-- Network & Tailscale Status Card -->
+  <div class="card" style="grid-column: 1 / -1;">
+    <div class="card-header">
+      <div class="card-title">🛡️ Tailscale & Network Isolation</div>
+    </div>
+    <p style="font-size: 0.85rem; color: var(--text-secondary); margin-bottom: 1rem;">
+      This service is engineered to be reachable exclusively over your private Tailnet without Tailscale Funnel.
+    </p>
+
+    <div style="display: flex; gap: 2rem; flex-wrap: wrap; background: var(--bg-primary); padding: 1rem; border-radius: 6px; border: 1px solid var(--border-color); font-size: 0.85rem;">
+      <div>
+        <span style="color: var(--text-secondary);">Detected Tailscale IP:</span>
+        <strong style="color: #00c9ff; margin-left: 0.35rem;">{{ tailscale_ip or 'Not directly detected (Running on local interface)' }}</strong>
+      </div>
+      <div>
+        <span style="color: var(--text-secondary);">Web UI Port:</span>
+        <strong style="color: #56d364; margin-left: 0.35rem;">8067</strong>
+      </div>
+      <div>
+        <span style="color: var(--text-secondary);">Tailscale Funnel:</span>
+        <strong style="color: #ff7b72; margin-left: 0.35rem;">Disabled (Zero public exposure)</strong>
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}
