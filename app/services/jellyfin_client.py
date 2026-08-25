@@ -12,18 +12,68 @@ class JellyfinClient:
         self,
         base_url: str,
         api_key: str,
+        username: str | None = None,
+        password: str | None = None,
         playback_db_path: str | None = None,
         timeout: float = 30.0,
     ):
         self.base_url = base_url.rstrip("/")
         self.api_key = api_key.strip()
+        self.username = username.strip() if username else ""
+        self.password = password if password else ""
         self.playback_db_path = playback_db_path.strip() if playback_db_path else None
         self.timeout = timeout
+        self._session_token: str | None = None
 
     def _get_headers(self) -> dict[str, str]:
+        """Headers authenticated with the static API key."""
         return {
             "X-Emby-Token": self.api_key,
             "Authorization": f'MediaBrowser Client="Jellyfin Smart Playlists", Device="Server", DeviceId="jellyfin-smart-playlists", Version="1.0.0", Token="{self.api_key}"',
+            "Accept": "application/json",
+        }
+
+    async def get_session_token(self, force_refresh: bool = False) -> str:
+        """Obtain or return cached session AccessToken for Jellyfin admin user.
+
+        Authenticates via POST /Users/AuthenticateByName to obtain a real session token.
+        Falls back to api_key if username is not configured.
+        """
+        if self._session_token and not force_refresh:
+            return self._session_token
+
+        if not self.username:
+            return self.api_key
+
+        auth_header = 'MediaBrowser Client="Jellyfin Smart Playlists", Device="Server", DeviceId="jellyfin-smart-playlists", Version="1.0.0"'
+        async with httpx.AsyncClient(timeout=self.timeout) as client:
+            resp = await client.post(
+                f"{self.base_url}/Users/AuthenticateByName",
+                headers={
+                    "Authorization": auth_header,
+                    "Content-Type": "application/json",
+                    "Accept": "application/json",
+                },
+                json={"Username": self.username, "Pw": self.password},
+            )
+            if not resp.is_success:
+                logger.error(f"Failed to authenticate as Jellyfin admin '{self.username}': HTTP {resp.status_code} — {resp.text}")
+                resp.raise_for_status()
+
+            data = resp.json()
+            token = data.get("AccessToken")
+            if not token:
+                raise ValueError("No AccessToken returned from /Users/AuthenticateByName")
+            self._session_token = token
+            logger.info(f"Successfully authenticated session token for Jellyfin admin '{self.username}'")
+            return self._session_token
+
+    async def _get_session_headers(self) -> dict[str, str]:
+        """Headers authenticated with the user session AccessToken."""
+        token = await self.get_session_token()
+        return {
+            "Authorization": f'MediaBrowser Client="Jellyfin Smart Playlists", Device="Server", DeviceId="jellyfin-smart-playlists", Version="1.0.0", Token="{token}"',
+            "X-Emby-Token": token,
             "Accept": "application/json",
         }
 
@@ -37,6 +87,8 @@ class JellyfinClient:
             "audio_count": 0,
             "playback_reporting_available": False,
             "playback_reporting_mode": "none",
+            "admin_authenticated": False,
+            "admin_username": self.username or None,
             "error": None,
         }
 
@@ -98,235 +150,210 @@ class JellyfinClient:
                         result["playback_reporting_available"] = True
                         result["playback_reporting_mode"] = "plugin_api"
                 except Exception as e:
-                    logger.debug(f"Playback reporting plugin API test failed: {e}")
+                    logger.debug(f"Playback reporting endpoint check failed: {e}")
 
-                # 5. Check direct SQLite if configured
-                if not result["playback_reporting_available"] and self.playback_db_path:
-                    db_p = Path(self.playback_db_path)
-                    if db_p.exists() and db_p.is_file():
-                        result["playback_reporting_available"] = True
-                        result["playback_reporting_mode"] = "direct_sqlite"
-
-                if not result["playback_reporting_available"]:
-                    result["playback_reporting_mode"] = "userdata_fallback"
+                # 5. Check Admin User Authentication if username configured
+                if self.username:
+                    try:
+                        await self.get_session_token(force_refresh=True)
+                        result["admin_authenticated"] = True
+                    except Exception as auth_err:
+                        result["admin_authenticated"] = False
+                        result["admin_auth_error"] = str(auth_err)
+                        logger.warning(f"Admin session authentication check failed: {auth_err}")
 
         except httpx.ConnectError:
-            result["error"] = f"Could not connect to Jellyfin at {self.base_url}. Ensure the server is running and reachable."
+            result["error"] = f"Could not connect to Jellyfin server at {self.base_url}. Check URL and network connectivity."
         except Exception as e:
-            result["error"] = f"Connection error: {str(e)}"
+            result["error"] = f"Jellyfin connection error: {str(e)}"
 
         return result
 
     async def get_users(self) -> list[dict]:
-        """Fetch all users from Jellyfin."""
+        """Fetch all non-disabled Jellyfin users."""
         async with httpx.AsyncClient(timeout=self.timeout) as client:
             resp = await client.get(
                 f"{self.base_url}/Users",
                 headers=self._get_headers(),
             )
             resp.raise_for_status()
-            users = resp.json()
-            return [
-                {
+            data = resp.json()
+            users = []
+            for u in data:
+                policy = u.get("Policy", {})
+                is_disabled = policy.get("IsDisabled", False)
+                users.append({
                     "id": u["Id"],
                     "name": u["Name"],
-                    "is_disabled": u.get("Policy", {}).get("IsDisabled", False),
-                }
-                for u in users
-            ]
+                    "is_disabled": is_disabled,
+                })
+            return users
 
     async def get_all_audio_items(self) -> list[dict]:
-        """Fetch all audio items with full metadata from Jellyfin library."""
-        async with httpx.AsyncClient(timeout=60.0) as client:
-            resp = await client.get(
-                f"{self.base_url}/Items",
-                headers=self._get_headers(),
-                params={
-                    "Recursive": "true",
-                    "IncludeItemTypes": "Audio",
-                    "Fields": "Genres,ProductionYear,Artists,Album,Tags,SongInfos,MediaStreams,DateCreated,PlayCount,UserData",
-                },
-            )
-            resp.raise_for_status()
-            data = resp.json()
-            items = data.get("Items", [])
-            parsed = []
+        """Fetch all audio tracks with metadata from Jellyfin library."""
+        tracks = []
+        start_index = 0
+        limit = 500
 
-            for item in items:
-                # Artists extraction
-                artists = item.get("Artists", [])
-                if not artists:
-                    artist_name = item.get("AlbumArtist") or (item.get("ArtistItems", [{}])[0].get("Name") if item.get("ArtistItems") else "")
-                    if artist_name:
-                        artists = [artist_name]
+        async with httpx.AsyncClient(timeout=self.timeout) as client:
+            while True:
+                resp = await client.get(
+                    f"{self.base_url}/Items",
+                    headers=self._get_headers(),
+                    params={
+                        "Recursive": "true",
+                        "IncludeItemTypes": "Audio",
+                        "Fields": "Genres,ProductionYear,RunTimeTicks,SongInfos,MediaSources",
+                        "StartIndex": str(start_index),
+                        "Limit": str(limit),
+                    },
+                )
+                resp.raise_for_status()
+                data = resp.json()
+                items = data.get("Items", [])
+                total = data.get("TotalRecordCount", len(items))
 
-                # BPM extraction
-                bpm = None
-                if "Bpm" in item and item["Bpm"] is not None:
-                    try:
-                        bpm = float(item["Bpm"])
-                    except (ValueError, TypeError):
-                        pass
-
-                # If BPM is not direct field, check Tags
-                if bpm is None:
-                    for tag in item.get("Tags", []):
-                        if "bpm" in tag.lower():
-                            try:
-                                bpm = float("".join(c for c in tag if c.isdigit() or c == "."))
+                for it in items:
+                    genres = it.get("Genres", [])
+                    bpm = None
+                    song_infos = it.get("SongInfos")
+                    if isinstance(song_infos, list) and song_infos:
+                        bpm = song_infos[0].get("Bpm")
+                    if bpm is None:
+                        media_sources = it.get("MediaSources", [])
+                        for ms in media_sources:
+                            for stream in ms.get("MediaStreams", []):
+                                if stream.get("Type") == "Audio" and stream.get("Bpm"):
+                                    bpm = stream.get("Bpm")
+                                    break
+                            if bpm is not None:
                                 break
-                            except Exception:
-                                pass
 
-                # Production year
-                prod_year = item.get("ProductionYear")
-                if not prod_year and item.get("PremiereDate"):
-                    try:
-                        prod_year = int(item["PremiereDate"][:4])
-                    except Exception:
-                        pass
+                    tracks.append({
+                        "item_id": it["Id"],
+                        "title": it.get("Name", "Unknown Title"),
+                        "artist": it.get("AlbumArtist") or it.get("Artists", ["Unknown Artist"])[0] if it.get("Artists") else "Unknown Artist",
+                        "album": it.get("Album", "Unknown Album"),
+                        "genres": genres,
+                        "production_year": it.get("ProductionYear"),
+                        "duration_ticks": it.get("RunTimeTicks", 0),
+                        "bpm": bpm,
+                    })
 
-                parsed.append({
-                    "item_id": item["Id"],
-                    "title": item.get("Name", "Unknown Track"),
-                    "artist": ", ".join(artists) if artists else "Unknown Artist",
-                    "album": item.get("Album", ""),
-                    "genres": item.get("Genres", []),
-                    "production_year": prod_year,
-                    "duration_ticks": item.get("RunTimeTicks", 0),
-                    "bpm": bpm,
-                    "date_created": item.get("DateCreated"),
-                })
-            return parsed
+                start_index += len(items)
+                if start_index >= total or not items:
+                    break
+
+        return tracks
 
     async def get_playback_activity(
         self,
         user_id: str,
         since_iso: str | None = None,
     ) -> list[dict]:
-        """Fetch user playback activity events from Playback Reporting plugin (or DB or fallback)."""
-        # Try 1: Playback Reporting endpoint
-        # The submit_custom_query endpoint only accepts a raw SQL string and does not
-        # support native bind parameters.  We sanitise the two values we interpolate
-        # (user_id from Jellyfin /Users, since_iso from our own DB) by escaping any
-        # embedded single-quotes.  These values never come from external user input.
+        """Fetch playback history events for a user."""
+        events = []
+
+        # Tier 1: Try Playback Reporting plugin API
         try:
             safe_user_id = user_id.replace("'", "''")
-            query = (
-                "SELECT DateCreated, UserId, ItemId, PlayDuration "
-                "FROM PlaybackActivity "
-                "WHERE ItemType = 'Audio' "
-                f"AND UserId = '{safe_user_id}'"
-            )
+            sql_query = f"SELECT ItemId, DateCreated FROM PlaybackActivity WHERE UserId = '{safe_user_id}'"
             if since_iso:
                 safe_since = since_iso.replace("'", "''")
-                query += f" AND DateCreated > '{safe_since}'"
-            query += " ORDER BY DateCreated DESC;"
+                sql_query += f" AND DateCreated > '{safe_since}'"
+            sql_query += " ORDER BY DateCreated DESC;"
 
             async with httpx.AsyncClient(timeout=self.timeout) as client:
                 resp = await client.post(
                     f"{self.base_url}/user_usage_stats/submit_custom_query",
                     headers=self._get_headers(),
-                    json={"CustomQueryString": query, "ReplaceUserId": False},
+                    json={"CustomQueryString": sql_query, "ReplaceUserId": False},
                 )
                 if resp.status_code == 200:
                     data = resp.json()
-                    # Playback Reporting returns list of rows or dict with results
-                    # Schema typically has columns & rows: {"colums": [...], "results": [[...]]} or [{"DateCreated":...}]
-                    results = []
-                    if isinstance(data, list):
-                        for row in data:
-                            results.append({
-                                "date_created": row.get("DateCreated"),
-                                "item_id": row.get("ItemId"),
-                                "play_duration": row.get("PlayDuration", 0),
-                            })
-                        return results
-                    elif isinstance(data, dict) and "results" in data:
-                        cols = [c.lower() for c in data.get("columns", ["datecreated", "userid", "itemid", "playduration"])]
-                        item_id_idx = cols.index("itemid") if "itemid" in cols else 2
-                        date_idx = cols.index("datecreated") if "datecreated" in cols else 0
-                        dur_idx = cols.index("playduration") if "playduration" in cols else 3
-
-                        for row in data["results"]:
-                            if len(row) > max(item_id_idx, date_idx):
-                                results.append({
-                                    "date_created": row[date_idx],
-                                    "item_id": row[item_id_idx],
-                                    "play_duration": row[dur_idx] if len(row) > dur_idx else 0,
+                    rows = data.get("results", data) if isinstance(data, dict) else data
+                    if isinstance(rows, list):
+                        for r in rows:
+                            item_id = r.get("ItemId") or r.get("item_id") or r.get("0")
+                            date_str = r.get("DateCreated") or r.get("date_created") or r.get("1")
+                            if item_id:
+                                events.append({
+                                    "item_id": str(item_id),
+                                    "timestamp": str(date_str) if date_str else datetime.now().isoformat(),
                                 })
-                        return results
+                        return events
         except Exception as e:
-            logger.debug(f"Playback Reporting API query failed, trying next method: {e}")
+            logger.debug(f"Playback Reporting plugin API query failed: {e}")
 
-        # Try 2: Direct SQLite file — always fully parameterized
+        # Tier 2: Direct SQLite file reading
         if self.playback_db_path and Path(self.playback_db_path).exists():
             try:
                 conn = sqlite3.connect(self.playback_db_path)
+                conn.row_factory = sqlite3.Row
                 cursor = conn.cursor()
-                sql = "SELECT DateCreated, ItemId, PlayDuration FROM PlaybackActivity WHERE ItemType = 'Audio' AND UserId = ?"
-                params = [user_id]
                 if since_iso:
-                    sql += " AND DateCreated > ?"
-                    params.append(since_iso)
-                sql += " ORDER BY DateCreated DESC;"
-                cursor.execute(sql, params)
-                rows = cursor.fetchall()
+                    cursor.execute(
+                        "SELECT ItemId, DateCreated FROM PlaybackActivity WHERE UserId = ? AND DateCreated > ? ORDER BY DateCreated DESC;",
+                        (user_id, since_iso),
+                    )
+                else:
+                    cursor.execute(
+                        "SELECT ItemId, DateCreated FROM PlaybackActivity WHERE UserId = ? ORDER BY DateCreated DESC;",
+                        (user_id,),
+                    )
+                for row in cursor.fetchall():
+                    events.append({
+                        "item_id": row["ItemId"],
+                        "timestamp": row["DateCreated"],
+                    })
                 conn.close()
-                return [
-                    {
-                        "date_created": r[0],
-                        "item_id": r[1],
-                        "play_duration": r[2],
-                    }
-                    for r in rows
-                ]
+                return events
             except Exception as e:
-                logger.debug(f"Direct Playback DB read failed: {e}")
+                logger.warning(f"Direct Playback Reporting SQLite read failed: {e}")
 
-        # Try 3: Fallback to Jellyfin UserData on items
+        # Tier 3: Native Jellyfin UserData fallback
         try:
             async with httpx.AsyncClient(timeout=self.timeout) as client:
+                params = {
+                    "UserId": user_id,
+                    "Recursive": "true",
+                    "IncludeItemTypes": "Audio",
+                    "IsPlayed": "true",
+                    "Fields": "UserData",
+                }
                 resp = await client.get(
                     f"{self.base_url}/Users/{user_id}/Items",
                     headers=self._get_headers(),
-                    params={
-                        "Recursive": "true",
-                        "IncludeItemTypes": "Audio",
-                        "Fields": "UserData,PlayCount",
-                        "IsPlayed": "true",
-                    },
+                    params=params,
                 )
                 if resp.status_code == 200:
-                    items = resp.json().get("Items", [])
-                    fallback_results = []
-                    for item in items:
-                        ud = item.get("UserData", {})
+                    data = resp.json()
+                    for it in data.get("Items", []):
+                        ud = it.get("UserData", {})
+                        play_count = ud.get("PlayCount", 0)
                         last_played = ud.get("LastPlayedDate")
-                        play_count = ud.get("PlayCount", 1)
-                        if last_played:
-                            if not since_iso or last_played > since_iso:
-                                for _ in range(min(play_count, 10)):
-                                    fallback_results.append({
-                                        "date_created": last_played,
-                                        "item_id": item["Id"],
-                                        "play_duration": 0,
-                                    })
-                    return fallback_results
+                        if play_count > 0:
+                            for _ in range(min(play_count, 10)):
+                                events.append({
+                                    "item_id": it["Id"],
+                                    "timestamp": last_played or datetime.now().isoformat(),
+                                })
+                    return events
         except Exception as e:
-            logger.error(f"Fallback UserData query failed: {e}")
+            logger.error(f"Fallback UserData query failed for user {user_id}: {e}")
 
-        return []
+        return events
 
     async def get_user_playlists(self, user_id: str) -> list[dict]:
-        """Fetch playlists belonging to a specific user."""
+        """Fetch all playlists owned by or visible to a user."""
+        headers = await self._get_session_headers()
         async with httpx.AsyncClient(timeout=self.timeout) as client:
             resp = await client.get(
                 f"{self.base_url}/Users/{user_id}/Items",
-                headers=self._get_headers(),
+                headers=headers,
                 params={
-                    "Recursive": "true",
                     "IncludeItemTypes": "Playlist",
+                    "Recursive": "true",
                 },
             )
             resp.raise_for_status()
@@ -341,11 +368,12 @@ class JellyfinClient:
 
     async def playlist_exists(self, playlist_id: str, user_id: str) -> bool:
         """Check whether a tracked playlist ID still exists in Jellyfin (returns False on 404)."""
+        headers = await self._get_session_headers()
         async with httpx.AsyncClient(timeout=self.timeout) as client:
             try:
                 resp = await client.get(
                     f"{self.base_url}/Playlists/{playlist_id}/Items",
-                    headers=self._get_headers(),
+                    headers=headers,
                     params={"UserId": user_id, "Limit": "1"},
                 )
                 if resp.status_code == 404:
@@ -357,28 +385,58 @@ class JellyfinClient:
                     return False
                 raise
 
+    async def get_playlist(self, playlist_id: str) -> dict:
+        """Retrieve full details of a playlist including OpenAccess, Shares, and ItemIds."""
+        headers = await self._get_session_headers()
+        async with httpx.AsyncClient(timeout=self.timeout) as client:
+            resp = await client.get(
+                f"{self.base_url}/Playlists/{playlist_id}",
+                headers=headers,
+            )
+            if resp.status_code == 401 and self.username:
+                await self.get_session_token(force_refresh=True)
+                headers = await self._get_session_headers()
+                resp = await client.get(
+                    f"{self.base_url}/Playlists/{playlist_id}",
+                    headers=headers,
+                )
+            if not resp.is_success:
+                logger.error(f"get_playlist failed for {playlist_id} ({resp.status_code}): {resp.text}")
+            resp.raise_for_status()
+            return resp.json()
+
     async def create_playlist(self, name: str, user_id: str, item_ids: list[str]) -> str:
         """Create a new playlist for the user and populate it.
 
-        Sends a JSON body only — no duplicate query params.  Confirmed against
-        this server's live Swagger (POST /Playlists → CreatePlaylistDto):
-          Name, Ids (array), UserId, MediaType, IsPublic, Users.
-        IsPublic IS a real field (boolean).  We explicitly set it to false so
-        Jellyfin does not grant every user on the server read access by default.
+        Uses admin session token and explicitly sets IsPublic=False / OpenAccess=False
+        to prevent server-wide public visibility.
         """
+        headers = await self._get_session_headers()
         async with httpx.AsyncClient(timeout=self.timeout) as client:
             payload = {
                 "Name": name,
                 "Ids": item_ids,
                 "UserId": user_id,
                 "MediaType": "Audio",
-                "IsPublic": False,  # Prevent server-wide visibility; owner-only access.
+                "IsPublic": False,
+                "OpenAccess": False,
             }
             resp = await client.post(
                 f"{self.base_url}/Playlists",
-                headers=self._get_headers(),
+                headers=headers,
                 json=payload,
             )
+            if resp.status_code == 401 and self.username:
+                logger.warning("Session token expired during create_playlist. Refreshing token and retrying...")
+                await self.get_session_token(force_refresh=True)
+                headers = await self._get_session_headers()
+                resp = await client.post(
+                    f"{self.base_url}/Playlists",
+                    headers=headers,
+                    json=payload,
+                )
+            if not resp.is_success:
+                logger.error(f"create_playlist failed for '{name}' user='{user_id}' ({resp.status_code}): {resp.text}")
             resp.raise_for_status()
             data = resp.json()
             return data["Id"]
@@ -386,27 +444,27 @@ class JellyfinClient:
     async def set_playlist_access(self, playlist_id: str, user_id: str, is_public: bool = False) -> None:
         """Set the public/private access flag on an existing playlist.
 
-        Uses POST /Playlists/{playlistId} (UpdatePlaylist) with UpdatePlaylistDto.
-        Confirmed against this server's live Swagger — UpdatePlaylistDto accepts:
-          Name (nullable), Ids (nullable), Users (nullable), IsPublic (nullable bool).
-        Fields set to null are not changed; we only touch IsPublic.
-
-        ROOT CAUSE of prior 400 errors (confirmed from Jellyfin issue #12092):
-          PlaylistsController.UpdatePlaylist() internally calls
-          PlaylistManager.GetPlaylistForUser(playlistId, userId).
-          When using a global API key (not a user session token), Jellyfin cannot
-          resolve userId from the auth context → userId = Guid.Empty →
-          UserManager.GetUserById(Guid.Empty) throws ArgumentException:
-          "Guid can't be empty" → 400 Bad Request.
-        FIX: pass userId as a query parameter so Jellyfin can resolve the caller.
+        Uses POST /Playlists/{playlistId} (UpdatePlaylist) with admin session token.
+        Explicitly sets IsPublic=False / OpenAccess=False.
         """
+        headers = await self._get_session_headers()
         async with httpx.AsyncClient(timeout=self.timeout) as client:
             resp = await client.post(
                 f"{self.base_url}/Playlists/{playlist_id}",
-                headers=self._get_headers(),
+                headers=headers,
                 params={"userId": user_id},
-                json={"IsPublic": is_public},
+                json={"IsPublic": is_public, "OpenAccess": is_public},
             )
+            if resp.status_code == 401 and self.username:
+                logger.warning(f"Session token expired during set_playlist_access for {playlist_id}. Refreshing token and retrying...")
+                await self.get_session_token(force_refresh=True)
+                headers = await self._get_session_headers()
+                resp = await client.post(
+                    f"{self.base_url}/Playlists/{playlist_id}",
+                    headers=headers,
+                    params={"userId": user_id},
+                    json={"IsPublic": is_public, "OpenAccess": is_public},
+                )
             if not resp.is_success:
                 logger.error(
                     f"set_playlist_access failed for playlist={playlist_id} user={user_id}: "
@@ -416,32 +474,39 @@ class JellyfinClient:
 
     async def update_playlist_items(self, playlist_id: str, user_id: str, item_ids: list[str]) -> None:
         """Replace the items in an existing playlist."""
+        headers = await self._get_session_headers()
         async with httpx.AsyncClient(timeout=self.timeout) as client:
             # 1. Fetch current items in the playlist
             get_resp = await client.get(
                 f"{self.base_url}/Playlists/{playlist_id}/Items",
-                headers=self._get_headers(),
+                headers=headers,
                 params={"UserId": user_id},
             )
+            if get_resp.status_code == 401 and self.username:
+                await self.get_session_token(force_refresh=True)
+                headers = await self._get_session_headers()
+                get_resp = await client.get(
+                    f"{self.base_url}/Playlists/{playlist_id}/Items",
+                    headers=headers,
+                    params={"UserId": user_id},
+                )
             get_resp.raise_for_status()
             current_items = get_resp.json().get("Items", [])
 
             # 2. Delete existing items
             if current_items:
-                # Jellyfin items in playlist have PlaylistItemId
                 entry_ids = [
                     item.get("PlaylistItemId") or item.get("Id")
                     for item in current_items
                     if item.get("PlaylistItemId") or item.get("Id")
                 ]
                 if entry_ids:
-                    # Remove in chunks if necessary
                     chunk_size = 50
                     for i in range(0, len(entry_ids), chunk_size):
                         chunk = entry_ids[i:i + chunk_size]
                         del_resp = await client.delete(
                             f"{self.base_url}/Playlists/{playlist_id}/Items",
-                            headers=self._get_headers(),
+                            headers=headers,
                             params={"EntryIds": ",".join(chunk)},
                         )
                         del_resp.raise_for_status()
@@ -453,7 +518,7 @@ class JellyfinClient:
                     chunk = item_ids[i:i + chunk_size]
                     add_resp = await client.post(
                         f"{self.base_url}/Playlists/{playlist_id}/Items",
-                        headers=self._get_headers(),
+                        headers=headers,
                         params={
                             "Ids": ",".join(chunk),
                             "UserId": user_id,
@@ -468,7 +533,7 @@ class JellyfinClient:
         content_type: str = "image/png",
     ) -> bool:
         """Upload custom icon image as Primary image for the playlist."""
-        headers = self._get_headers()
+        headers = await self._get_session_headers()
         headers["Content-Type"] = content_type
 
         async with httpx.AsyncClient(timeout=self.timeout) as client:
@@ -478,6 +543,15 @@ class JellyfinClient:
                     headers=headers,
                     content=image_bytes,
                 )
+                if resp.status_code == 401 and self.username:
+                    await self.get_session_token(force_refresh=True)
+                    headers = await self._get_session_headers()
+                    headers["Content-Type"] = content_type
+                    resp = await client.post(
+                        f"{self.base_url}/Items/{playlist_id}/Images/Primary",
+                        headers=headers,
+                        content=image_bytes,
+                    )
                 if resp.status_code in (200, 204):
                     return True
                 logger.warning(f"Failed to upload playlist image ({resp.status_code}): {resp.text}")

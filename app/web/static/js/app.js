@@ -149,6 +149,8 @@ async function testJellyfinConnection() {
   const out = document.getElementById("jellyfin-test-output");
   const url = document.getElementById("jellyfin_url").value;
   const key = document.getElementById("jellyfin_api_key").value;
+  const username = document.getElementById("jellyfin_username") ? document.getElementById("jellyfin_username").value : "";
+  const password = document.getElementById("jellyfin_password") ? document.getElementById("jellyfin_password").value : "";
   const dbPath = document.getElementById("playback_db_path").value;
 
   if (btn) {
@@ -164,13 +166,22 @@ async function testJellyfinConnection() {
     const res = await apiPost("/api/test/jellyfin", {
       url: url,
       api_key: key,
+      username: username,
+      password: password,
       playback_db_path: dbPath,
     });
     if (out) {
       if (res.connected) {
+        let adminStatus = "Not Configured (using API key)";
+        if (res.admin_username) {
+          adminStatus = res.admin_authenticated
+            ? `✅ Authenticated as '${res.admin_username}' (Session token acquired)`
+            : `❌ Authentication failed for '${res.admin_username}': ${res.admin_auth_error || "Unknown error"}`;
+        }
         out.innerHTML = `✅ Successfully connected to Jellyfin!\n` +
           `Server Name: ${res.server_name}\n` +
           `Server Version: ${res.version}\n` +
+          `Admin User Session: ${adminStatus}\n` +
           `Users found: ${res.user_count}\n` +
           `Audio tracks in library: ${res.audio_count}\n` +
           `Playback Reporting Plugin: ${res.playback_reporting_available ? "Active (" + res.playback_reporting_mode + ")" : "Not Detected (Using UserData fallback)"}`;
@@ -183,7 +194,7 @@ async function testJellyfinConnection() {
   } finally {
     if (btn) {
       btn.disabled = false;
-      btn.innerText = "Test Jellyfin Connection";
+      btn.innerText = "Test Connection";
     }
   }
 }

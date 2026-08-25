@@ -8,6 +8,8 @@ from app.config import (
     DB_PATH,
     DEFAULT_JELLYFIN_URL,
     DEFAULT_JELLYFIN_API_KEY,
+    DEFAULT_JELLYFIN_USERNAME,
+    DEFAULT_JELLYFIN_PASSWORD,
     DEFAULT_GEMINI_API_KEY,
     DEFAULT_PLAYBACK_DB_PATH,
     DEFAULT_UI_PASSWORD,
@@ -297,6 +299,8 @@ def init_db(db_file: Path | str = DB_PATH):
         default_settings = {
             "jellyfin_url": DEFAULT_JELLYFIN_URL,
             "jellyfin_api_key": DEFAULT_JELLYFIN_API_KEY,
+            "jellyfin_username": DEFAULT_JELLYFIN_USERNAME,
+            "jellyfin_password": DEFAULT_JELLYFIN_PASSWORD,
             "gemini_api_key": DEFAULT_GEMINI_API_KEY,
             "gemini_model": "gemini-1.5-flash",
             "playback_db_path": DEFAULT_PLAYBACK_DB_PATH,

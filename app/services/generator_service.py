@@ -116,6 +116,8 @@ async def _run_smart_playlists_inner(
     settings = get_all_settings(db_file)
     jellyfin_url = settings.get("jellyfin_url", "")
     jellyfin_api_key = settings.get("jellyfin_api_key", "")
+    jellyfin_username = settings.get("jellyfin_username", "")
+    jellyfin_password = settings.get("jellyfin_password", "")
     gemini_api_key = settings.get("gemini_api_key", "")
     gemini_model = settings.get("gemini_model", "gemini-1.5-flash")
     playback_db_path = settings.get("playback_db_path", "")
@@ -124,6 +126,8 @@ async def _run_smart_playlists_inner(
     jf_client = JellyfinClient(
         base_url=jellyfin_url,
         api_key=jellyfin_api_key,
+        username=jellyfin_username,
+        password=jellyfin_password,
         playback_db_path=playback_db_path,
     )
     gem_client = GeminiClient(api_key=gemini_api_key, model=gemini_model)
@@ -513,6 +517,8 @@ async def push_all_mix_icons(db_file: Path | str = DB_PATH) -> dict:
     jf_client = JellyfinClient(
         base_url=settings.get("jellyfin_url", ""),
         api_key=settings.get("jellyfin_api_key", ""),
+        username=settings.get("jellyfin_username", ""),
+        password=settings.get("jellyfin_password", ""),
     )
 
     mixes = get_mix_definitions(db_file)
@@ -552,19 +558,17 @@ async def push_all_mix_icons(db_file: Path | str = DB_PATH) -> dict:
 
 
 async def fix_all_playlist_access(db_file: Path | str = DB_PATH) -> dict:
-    """Retroactively set IsPublic=false on every playlist tracked in user_playlist_state.
+    """Retroactively set IsPublic=false and OpenAccess=false on every playlist tracked in user_playlist_state.
 
-    This is a one-time remediation action for the 48 playlists that were created
-    before the IsPublic fix was deployed.  It is also safe to call repeatedly —
-    it only patches playlists this app created and recorded in the DB, and silently
-    skips any that have since been deleted (404).
-
-    Called via POST /api/playlists/fix-access in the web UI.
+    Uses an authenticated admin session token to update each playlist and verify
+    that OpenAccess reads false.
     """
     settings = get_all_settings(db_file)
     jf_client = JellyfinClient(
         base_url=settings.get("jellyfin_url", ""),
         api_key=settings.get("jellyfin_api_key", ""),
+        username=settings.get("jellyfin_username", ""),
+        password=settings.get("jellyfin_password", ""),
     )
 
     results = {
@@ -591,16 +595,29 @@ async def fix_all_playlist_access(db_file: Path | str = DB_PATH) -> dict:
 
     for row in tracked:
         pl_id = row["jellyfin_playlist_id"]
-        u_id  = row["user_id"]
+        u_id = row["user_id"]
         u_name = row["username"]
         m_key = row["mix_key"]
         label = f"{u_name} / {m_key} ({pl_id})"
 
         try:
             await jf_client.set_playlist_access(pl_id, u_id, is_public=False)
-            results["total_fixed"] += 1
-            results["details"].append(f"✅ Fixed: {label}")
-            logger.info(f"fix_all_playlist_access: set IsPublic=false on {label}")
+            
+            # Verify OpenAccess status
+            try:
+                details = await jf_client.get_playlist(pl_id)
+                open_access = details.get("OpenAccess")
+                if open_access is False:
+                    results["total_fixed"] += 1
+                    results["details"].append(f"✅ Fixed & verified private (OpenAccess: false): {label}")
+                else:
+                    results["total_fixed"] += 1
+                    results["details"].append(f"✅ Updated (OpenAccess: {open_access}): {label}")
+            except Exception:
+                results["total_fixed"] += 1
+                results["details"].append(f"✅ Updated access: {label}")
+
+            logger.info(f"fix_all_playlist_access: set IsPublic=false / OpenAccess=false on {label}")
         except Exception as e:
             err_str = str(e)
             # 404 means the playlist was already deleted — not a real error

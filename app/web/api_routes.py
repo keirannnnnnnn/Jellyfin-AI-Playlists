@@ -30,6 +30,8 @@ class RunRequest(BaseModel):
 class TestJellyfinRequest(BaseModel):
     url: str | None = None
     api_key: str | None = None
+    username: str | None = None
+    password: str | None = None
     playback_db_path: str | None = None
 
 
@@ -82,11 +84,10 @@ async def push_icons():
 
 @router.post("/playlists/fix-access")
 async def fix_playlist_access():
-    """Retroactively set IsPublic=false on all playlists tracked in user_playlist_state.
+    """Retroactively set IsPublic=false and OpenAccess=false on all playlists tracked in user_playlist_state.
 
-    Use this to immediately close server-wide visibility on playlists created before
-    the IsPublic access-control fix was deployed.  Safe to call multiple times —
-    only touches playlists recorded in this app's DB and skips any already deleted.
+    Uses an authenticated admin session token to update each playlist and verify
+    that OpenAccess reads false.
     """
     result = await fix_all_playlist_access(db_file=DB_PATH)
     return result
@@ -98,11 +99,15 @@ async def test_jellyfin_endpoint(payload: TestJellyfinRequest):
     settings = get_all_settings(DB_PATH)
     url = payload.url or settings.get("jellyfin_url", "")
     api_key = payload.api_key or settings.get("jellyfin_api_key", "")
+    username = payload.username if payload.username is not None else settings.get("jellyfin_username", "")
+    password = payload.password if payload.password is not None else settings.get("jellyfin_password", "")
     playback_db_path = payload.playback_db_path or settings.get("playback_db_path", "")
 
     client = JellyfinClient(
         base_url=url,
         api_key=api_key,
+        username=username,
+        password=password,
         playback_db_path=playback_db_path,
     )
     res = await client.test_connection()

@@ -346,6 +346,8 @@ async def update_jellyfin_settings(
     request: Request,
     jellyfin_url: str = Form(...),
     jellyfin_api_key: str = Form(...),
+    jellyfin_username: str = Form(""),
+    jellyfin_password: str = Form(""),
     playback_db_path: str = Form(""),
 ):
     auth_check = require_auth_page(request)
@@ -354,6 +356,9 @@ async def update_jellyfin_settings(
 
     set_setting("jellyfin_url", jellyfin_url.strip())
     set_setting("jellyfin_api_key", jellyfin_api_key.strip())
+    set_setting("jellyfin_username", jellyfin_username.strip())
+    if jellyfin_password:
+        set_setting("jellyfin_password", jellyfin_password)
     set_setting("playback_db_path", playback_db_path.strip())
     return RedirectResponse(url="/settings?success=Jellyfin+settings+saved+successfully", status_code=303)
 

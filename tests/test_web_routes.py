@@ -53,3 +53,29 @@ def test_api_toggle_user():
     resp = client.post("/api/users/toggle", json={"user_id": "test_uid", "enabled": False})
     assert resp.status_code == 200
     assert resp.json()["enabled"] is False
+
+
+def test_update_jellyfin_settings():
+    client = TestClient(app)
+    token = create_session_token()
+    client.cookies.set(COOKIE_NAME, token)
+
+    resp = client.post(
+        "/settings/jellyfin",
+        data={
+            "jellyfin_url": "http://192.168.1.50:8096",
+            "jellyfin_api_key": "new_api_key",
+            "jellyfin_username": "myadmin",
+            "jellyfin_password": "mypassword",
+            "playback_db_path": "",
+        },
+        follow_redirects=False,
+    )
+    assert resp.status_code == 303
+
+    from app.database import get_all_settings
+    st = get_all_settings()
+    assert st["jellyfin_url"] == "http://192.168.1.50:8096"
+    assert st["jellyfin_api_key"] == "new_api_key"
+    assert st["jellyfin_username"] == "myadmin"
+    assert st["jellyfin_password"] == "mypassword"

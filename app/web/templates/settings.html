@@ -50,7 +50,25 @@
         <label for="jellyfin_api_key">Admin API Key</label>
         <input type="password" id="jellyfin_api_key" name="jellyfin_api_key" value="{{ settings.jellyfin_api_key }}" placeholder="Enter Jellyfin API key..." required>
         <div style="font-size: 0.75rem; color: var(--text-muted); margin-top: 0.25rem;">
-          Generate in Jellyfin Dashboard &rarr; API Keys.
+          Generate in Jellyfin Dashboard &rarr; API Keys. Used for catalog & user listing.
+        </div>
+      </div>
+
+      <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem;">
+        <div class="form-group">
+          <label for="jellyfin_username">Admin Username</label>
+          <input type="text" id="jellyfin_username" name="jellyfin_username" value="{{ settings.jellyfin_username }}" placeholder="e.g. admin">
+          <div style="font-size: 0.75rem; color: var(--text-muted); margin-top: 0.25rem;">
+            Used to acquire admin session token for cross-user playlist operations.
+          </div>
+        </div>
+
+        <div class="form-group">
+          <label for="jellyfin_password">Admin Password</label>
+          <input type="password" id="jellyfin_password" name="jellyfin_password" value="{{ settings.jellyfin_password }}" placeholder="Leave blank if no password...">
+          <div style="font-size: 0.75rem; color: var(--text-muted); margin-top: 0.25rem;">
+            Required for /Users/AuthenticateByName session auth.
+          </div>
         </div>
       </div>
 
