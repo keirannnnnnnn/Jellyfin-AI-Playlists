@@ -566,6 +566,10 @@ async def fix_all_playlist_access(db_file: Path | str = DB_PATH) -> dict:
     ownership enforcement), it deletes the exposed playlist via admin session, recreates
     it fresh via create_playlist (which sets OpenAccess: false / IsPublic: false), re-applies
     the mix icon, updates user_playlist_state with the new ID, and verifies OpenAccess: false.
+
+    If a tracked playlist ID returns 404 (e.g. already recreated in a prior attempt),
+    it inspects the user's live playlists by name, links the active private playlist to the DB,
+    and confirms OpenAccess: false.
     """
     settings = get_all_settings(db_file)
     jf_client = JellyfinClient(
@@ -610,20 +614,57 @@ async def fix_all_playlist_access(db_file: Path | str = DB_PATH) -> dict:
         label = f"{u_name} / {m_name} ({pl_id})"
 
         try:
-            # 1. Fetch current live playlist details
             pl_data = None
+            is_404 = False
+
+            # 1. Fetch current live playlist details
             try:
                 pl_data = await jf_client.get_playlist(pl_id)
             except Exception as get_err:
                 if "404" in str(get_err) or "Not Found" in str(get_err):
+                    is_404 = True
+                    logger.debug(f"fix_all_playlist_access: {label} returned 404. Checking user's live playlists by name...")
+                else:
+                    raise
+
+            # Handle 404: search user's live playlists to find if it was already recreated
+            if is_404:
+                user_playlists = await jf_client.get_user_playlists(u_id)
+                match = next(
+                    (p for p in user_playlists if p.get("name", "").strip().lower() == m_name.strip().lower()),
+                    None,
+                )
+                if match:
+                    live_id = match["id"]
+                    live_data = await jf_client.get_playlist(live_id)
+                    if live_data.get("OpenAccess") is False:
+                        # Found existing private playlist — update DB tracking
+                        with get_db(db_file) as conn:
+                            cursor = conn.cursor()
+                            cursor.execute(
+                                """
+                                UPDATE user_playlist_state
+                                SET jellyfin_playlist_id = ?
+                                WHERE user_id = ? AND mix_key = ?;
+                                """,
+                                (live_id, u_id, m_key),
+                            )
+                        results["total_fixed"] += 1
+                        results["details"].append(f"✅ Linked & verified private (OpenAccess: false): {u_name} / {m_name} (ID: {live_id})")
+                        logger.info(f"fix_all_playlist_access: re-linked {u_name} / {m_name} to live ID {live_id} (OpenAccess: false)")
+                        continue
+                    else:
+                        # Live playlist is public, delete and recreate below
+                        pl_data = live_data
+                        pl_id = live_id
+                else:
                     results["already_gone"] += 1
-                    results["details"].append(f"⚠️ Not found (already deleted): {label}")
-                    logger.debug(f"fix_all_playlist_access: {label} returned 404, skipping.")
+                    results["details"].append(f"⚠️ Playlist missing in Jellyfin (will regenerate on next schedule): {label}")
+                    logger.info(f"fix_all_playlist_access: {label} not found in Jellyfin, skipping.")
                     continue
-                raise
 
             # 2. Check if already private
-            if pl_data.get("OpenAccess") is False:
+            if pl_data and pl_data.get("OpenAccess") is False:
                 results["total_fixed"] += 1
                 results["details"].append(f"✅ Already private (OpenAccess: false): {label}")
                 logger.info(f"fix_all_playlist_access: {label} already has OpenAccess=false")
@@ -651,19 +692,19 @@ async def fix_all_playlist_access(db_file: Path | str = DB_PATH) -> dict:
             logger.info(f"fix_all_playlist_access: deleting old public playlist {pl_id} for {label} ({len(track_ids)} tracks)")
             await jf_client.delete_playlist(pl_id)
 
-            # Recreate with OpenAccess: false
-            new_pl_id = await jf_client.create_playlist(m_name, u_id, track_ids)
-            logger.info(f"fix_all_playlist_access: created fresh private playlist {new_pl_id} for {label}")
+            # Recreate with OpenAccess: false (captures the new playlist ID)
+            new_playlist_id = await jf_client.create_playlist(m_name, u_id, track_ids)
+            logger.info(f"fix_all_playlist_access: created fresh private playlist {new_playlist_id} for {label}")
 
             # Reapply mix icon if configured
             icon_bytes, content_type = load_icon_bytes(mix_def.get("icon_path"))
             if icon_bytes:
                 try:
-                    await jf_client.set_playlist_image(new_pl_id, icon_bytes, content_type)
+                    await jf_client.set_playlist_image(new_playlist_id, icon_bytes, content_type)
                 except Exception as img_err:
-                    logger.warning(f"Failed to reapply icon to {new_pl_id}: {img_err}")
+                    logger.warning(f"Failed to reapply icon to {new_playlist_id}: {img_err}")
 
-            # Update DB with new playlist ID
+            # Update DB with the new playlist ID immediately
             with get_db(db_file) as conn:
                 cursor = conn.cursor()
                 cursor.execute(
@@ -672,18 +713,18 @@ async def fix_all_playlist_access(db_file: Path | str = DB_PATH) -> dict:
                     SET jellyfin_playlist_id = ?
                     WHERE user_id = ? AND mix_key = ?;
                     """,
-                    (new_pl_id, u_id, m_key),
+                    (new_playlist_id, u_id, m_key),
                 )
 
-            # Verify new playlist has OpenAccess: false
-            new_pl_data = await jf_client.get_playlist(new_pl_id)
+            # Verify against the NEW playlist ID
+            new_pl_data = await jf_client.get_playlist(new_playlist_id)
             verified_open = new_pl_data.get("OpenAccess")
             if verified_open is False:
                 results["total_fixed"] += 1
-                results["details"].append(f"✅ Recreated & verified private (OpenAccess: false): {u_name} / {m_name} (New ID: {new_pl_id})")
+                results["details"].append(f"✅ Recreated & verified private (OpenAccess: false): {u_name} / {m_name} (New ID: {new_playlist_id})")
             else:
                 results["total_fixed"] += 1
-                results["details"].append(f"✅ Recreated (OpenAccess: {verified_open}): {u_name} / {m_name} (New ID: {new_pl_id})")
+                results["details"].append(f"✅ Recreated (OpenAccess: {verified_open}): {u_name} / {m_name} (New ID: {new_playlist_id})")
 
         except Exception as e:
             err_str = str(e)
