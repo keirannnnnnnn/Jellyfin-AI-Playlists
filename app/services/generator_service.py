@@ -347,17 +347,9 @@ async def _run_smart_playlists_inner(
                     # ---------------------------------------------------------------
                     # Playlist targeting — DB-state-only safety rule
                     # ---------------------------------------------------------------
-                    # Only use a playlist_id that this app previously recorded in
-                    # user_playlist_state (db_tracked_playlists).  Never search
-                    # Jellyfin's live playlist list by name.
-                    #
-                    # If we have a tracked ID, verify it still exists (the user might
-                    # have deleted the playlist manually).  A 404 means "needs
-                    # recreating" — create fresh and update user_playlist_state with
-                    # the new ID.  Any other error propagates normally.
-                    # ---------------------------------------------------------------
                     tracked_id = db_tracked_playlists.get(m_key)
                     playlist_id: str
+                    access_needs_fixing = False  # True if we need to retroactively close access
 
                     if tracked_id:
                         still_exists = await jf_client.playlist_exists(tracked_id, u_id)
@@ -365,6 +357,9 @@ async def _run_smart_playlists_inner(
                             await jf_client.update_playlist_items(tracked_id, u_id, selected_ids)
                             playlist_id = tracked_id
                             action_note = f"Updated in-place with {len(selected_ids)} tracks"
+                            # Ensure access is still locked — the playlist may have
+                            # been created before the IsPublic fix was deployed.
+                            access_needs_fixing = True
                         else:
                             # Tracked playlist was deleted by the user — recreate it.
                             logger.info(
@@ -376,10 +371,26 @@ async def _run_smart_playlists_inner(
                                 f"Recreated (tracked ID {tracked_id} was deleted) "
                                 f"with {len(selected_ids)} tracks"
                             )
+                            access_needs_fixing = True
                     else:
                         # No prior record — first time creating this mix for this user.
                         playlist_id = await jf_client.create_playlist(m_name, u_id, selected_ids)
                         action_note = f"Created new playlist with {len(selected_ids)} tracks"
+                        access_needs_fixing = True
+
+                    # Enforce private access (IsPublic=false) on every create/recreate
+                    # and on updates of playlists that pre-date the fix.
+                    # Belt-and-suspenders: IsPublic is set on create AND confirmed via
+                    # UpdatePlaylist, because some Jellyfin versions ignore IsPublic
+                    # on the create endpoint.
+                    if access_needs_fixing:
+                        try:
+                            await jf_client.set_playlist_access(playlist_id, is_public=False)
+                        except Exception as acc_err:
+                            logger.warning(
+                                f"Failed to set IsPublic=false on playlist {playlist_id} "
+                                f"for user '{u_name}' mix '{m_name}': {acc_err}"
+                            )
 
                     # Upload mix icon to Jellyfin playlist if available
                     icon_bytes, content_type = load_icon_bytes(mix.get("icon_path"))
@@ -535,3 +546,74 @@ async def push_all_mix_icons(db_file: Path | str = DB_PATH) -> dict:
         results["details"].append(f"Push icon exception: {str(e)}")
 
     return results
+
+
+async def fix_all_playlist_access(db_file: Path | str = DB_PATH) -> dict:
+    """Retroactively set IsPublic=false on every playlist tracked in user_playlist_state.
+
+    This is a one-time remediation action for the 48 playlists that were created
+    before the IsPublic fix was deployed.  It is also safe to call repeatedly —
+    it only patches playlists this app created and recorded in the DB, and silently
+    skips any that have since been deleted (404).
+
+    Called via POST /api/playlists/fix-access in the web UI.
+    """
+    settings = get_all_settings(db_file)
+    jf_client = JellyfinClient(
+        base_url=settings.get("jellyfin_url", ""),
+        api_key=settings.get("jellyfin_api_key", ""),
+    )
+
+    results = {
+        "total_fixed": 0,
+        "already_gone": 0,
+        "errors": 0,
+        "details": [],
+    }
+
+    # Load every tracked playlist from the DB
+    with get_db(db_file) as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            SELECT ups.user_id, u.username, ups.mix_key, ups.jellyfin_playlist_id
+            FROM user_playlist_state ups
+            JOIN users u ON u.jellyfin_user_id = ups.user_id
+            WHERE ups.jellyfin_playlist_id IS NOT NULL;
+            """
+        )
+        tracked = [dict(row) for row in cursor.fetchall()]
+
+    logger.info(f"fix_all_playlist_access: patching {len(tracked)} tracked playlists.")
+
+    for row in tracked:
+        pl_id = row["jellyfin_playlist_id"]
+        u_name = row["username"]
+        m_key = row["mix_key"]
+        label = f"{u_name} / {m_key} ({pl_id})"
+
+        try:
+            await jf_client.set_playlist_access(pl_id, is_public=False)
+            results["total_fixed"] += 1
+            results["details"].append(f"✅ Fixed: {label}")
+            logger.info(f"fix_all_playlist_access: set IsPublic=false on {label}")
+        except Exception as e:
+            err_str = str(e)
+            # 404 means the playlist was already deleted — not a real error
+            if "404" in err_str or "Not Found" in err_str.lower():
+                results["already_gone"] += 1
+                results["details"].append(f"⚠️ Not found (skipped): {label}")
+                logger.debug(f"fix_all_playlist_access: {label} returned 404, skipping.")
+            else:
+                results["errors"] += 1
+                results["details"].append(f"❌ Error: {label} — {err_str}")
+                logger.error(f"fix_all_playlist_access: failed to patch {label}: {e}")
+
+    logger.info(
+        f"fix_all_playlist_access complete: "
+        f"{results['total_fixed']} fixed, "
+        f"{results['already_gone']} not found, "
+        f"{results['errors']} errors."
+    )
+    return results
+

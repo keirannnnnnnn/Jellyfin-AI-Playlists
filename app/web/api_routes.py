@@ -15,7 +15,7 @@ from app.database import (
 )
 from app.services.jellyfin_client import JellyfinClient
 from app.services.gemini_client import GeminiClient
-from app.services.generator_service import run_smart_playlists, push_all_mix_icons
+from app.services.generator_service import run_smart_playlists, push_all_mix_icons, fix_all_playlist_access
 
 logger = logging.getLogger("jellyfin_playlists.api")
 router = APIRouter(prefix="/api", dependencies=[Depends(require_auth)])
@@ -77,6 +77,18 @@ async def trigger_run(payload: RunRequest):
 async def push_icons():
     """Push icons to all existing Jellyfin user playlists matching mix names."""
     result = await push_all_mix_icons(db_file=DB_PATH)
+    return result
+
+
+@router.post("/playlists/fix-access")
+async def fix_playlist_access():
+    """Retroactively set IsPublic=false on all playlists tracked in user_playlist_state.
+
+    Use this to immediately close server-wide visibility on playlists created before
+    the IsPublic access-control fix was deployed.  Safe to call multiple times —
+    only touches playlists recorded in this app's DB and skips any already deleted.
+    """
+    result = await fix_all_playlist_access(db_file=DB_PATH)
     return result
 
 

@@ -53,7 +53,7 @@ Runs as a single lightweight container or standalone Python service, reachable e
 
 1. Clone or copy the repository onto your host machine:
    ```bash
-   git clone https://github.com/keirannnnnnnn/Jellyfin-AI-Playlists.git "Jellyfin AI Playlists"
+   git clone <repo-url> "Jellyfin AI Playlists"
    cd "Jellyfin AI Playlists"
    ```
 

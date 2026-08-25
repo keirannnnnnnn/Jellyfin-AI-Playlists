@@ -104,6 +104,44 @@ async function pushIconsNow() {
 }
 
 // -------------------------------------------------------------
+// Fix Playlist Access — retroactively set IsPublic=false
+// -------------------------------------------------------------
+async function fixPlaylistAccess() {
+  const btn = document.getElementById("btn-fix-access");
+  const out = document.getElementById("fix-access-result");
+
+  if (!confirm(
+    "This will call POST /Playlists/{id} for every playlist tracked in the DB and set IsPublic=false.\n\n" +
+    "Safe to run multiple times. Proceed?"
+  )) return;
+
+  if (btn) {
+    btn.disabled = true;
+    btn.innerHTML = "⏳ Fixing Access...";
+  }
+  if (out) {
+    out.style.display = "block";
+    out.innerText = "Patching all tracked playlists to IsPublic=false. Please wait...";
+  }
+
+  try {
+    const res = await apiPost("/api/playlists/fix-access");
+    if (out) {
+      const summary = `Access fix complete!\n✅ Fixed: ${res.total_fixed}  ⚠️ Not found: ${res.already_gone}  ❌ Errors: ${res.errors}`;
+      const details = res.details.length > 0 ? `\n\nDetails:\n${res.details.join("\n")}` : "";
+      out.innerText = summary + details;
+    }
+  } catch (err) {
+    if (out) out.innerText = `Error fixing playlist access: ${err.message}`;
+  } finally {
+    if (btn) {
+      btn.disabled = false;
+      btn.innerHTML = "🔒 Fix Playlist Access (Close Public Visibility)";
+    }
+  }
+}
+
+// -------------------------------------------------------------
 // Test Connections
 // -------------------------------------------------------------
 async function testJellyfinConnection() {

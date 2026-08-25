@@ -360,20 +360,19 @@ class JellyfinClient:
     async def create_playlist(self, name: str, user_id: str, item_ids: list[str]) -> str:
         """Create a new playlist for the user and populate it.
 
-        Sends a JSON body only — no duplicate query params.  The POST /Playlists
-        contract (verified against Jellyfin 10.x Swagger) accepts:
-          Name, Ids (array), UserId, MediaType in the request body.
-        IsPublic is not a documented field on this endpoint and is omitted.
+        Sends a JSON body only — no duplicate query params.  Confirmed against
+        this server's live Swagger (POST /Playlists → CreatePlaylistDto):
+          Name, Ids (array), UserId, MediaType, IsPublic, Users.
+        IsPublic IS a real field (boolean).  We explicitly set it to false so
+        Jellyfin does not grant every user on the server read access by default.
         """
         async with httpx.AsyncClient(timeout=self.timeout) as client:
-            # JSON body only — no duplicate query params.
-            # POST /Playlists accepts Name, Ids, UserId, MediaType in the request body.
-            # IsPublic is not documented on this endpoint and is omitted.
             payload = {
                 "Name": name,
                 "Ids": item_ids,
                 "UserId": user_id,
                 "MediaType": "Audio",
+                "IsPublic": False,  # Prevent server-wide visibility; owner-only access.
             }
             resp = await client.post(
                 f"{self.base_url}/Playlists",
@@ -383,6 +382,27 @@ class JellyfinClient:
             resp.raise_for_status()
             data = resp.json()
             return data["Id"]
+
+    async def set_playlist_access(self, playlist_id: str, is_public: bool = False) -> None:
+        """Set the public/private access flag on an existing playlist.
+
+        Uses POST /Playlists/{playlistId} (UpdatePlaylist) with UpdatePlaylistDto.
+        Confirmed against this server's live Swagger — UpdatePlaylistDto accepts:
+          Name (nullable), Ids (nullable), Users (nullable), IsPublic (nullable bool).
+        Fields set to null are not changed; we only touch IsPublic.
+
+        Call this:
+        - After create_playlist (belt-and-suspenders in case Jellyfin ignores IsPublic
+          on create in some versions).
+        - As a retroactive fix on already-created playlists that were left public.
+        """
+        async with httpx.AsyncClient(timeout=self.timeout) as client:
+            resp = await client.post(
+                f"{self.base_url}/Playlists/{playlist_id}",
+                headers=self._get_headers(),
+                json={"IsPublic": is_public},
+            )
+            resp.raise_for_status()
 
     async def update_playlist_items(self, playlist_id: str, user_id: str, item_ids: list[str]) -> None:
         """Replace the items in an existing playlist."""

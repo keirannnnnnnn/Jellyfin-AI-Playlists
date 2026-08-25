@@ -8,13 +8,17 @@
     <h1 class="page-title">Playlists & Mix Definitions</h1>
     <p class="page-desc">Manage the 6 smart mix definitions, custom artwork icons, and filter rules</p>
   </div>
-  <div>
+  <div style="display: flex; gap: 0.75rem; flex-wrap: wrap;">
+    <button id="btn-fix-access" class="btn btn-danger" onclick="fixPlaylistAccess()" title="Retroactively set IsPublic=false on all tracked playlists">
+      🔒 Fix Playlist Access (Close Public Visibility)
+    </button>
     <button id="btn-push-icons" class="btn btn-primary" onclick="pushIconsNow()">
       🎨 Push Icons to All Jellyfin Playlists
     </button>
   </div>
 </div>
 
+<div id="fix-access-result" class="diag-output" style="display: none; margin-bottom: 1.5rem;"></div>
 <div id="push-icons-result" class="diag-output" style="display: none; margin-bottom: 1.5rem;"></div>
 
 <!-- Mix Definitions Cards -->
