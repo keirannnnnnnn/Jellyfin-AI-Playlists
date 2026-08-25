@@ -383,9 +383,12 @@ async def _run_smart_playlists_inner(
                     # Belt-and-suspenders: IsPublic is set on create AND confirmed via
                     # UpdatePlaylist, because some Jellyfin versions ignore IsPublic
                     # on the create endpoint.
+                    # userId is passed as a query param — required workaround for the
+                    # Jellyfin bug where global API key auth resolves to Guid.Empty
+                    # in GetPlaylistForUser, causing 400 (see Jellyfin issue #12092).
                     if access_needs_fixing:
                         try:
-                            await jf_client.set_playlist_access(playlist_id, is_public=False)
+                            await jf_client.set_playlist_access(playlist_id, u_id, is_public=False)
                         except Exception as acc_err:
                             logger.warning(
                                 f"Failed to set IsPublic=false on playlist {playlist_id} "
@@ -588,12 +591,13 @@ async def fix_all_playlist_access(db_file: Path | str = DB_PATH) -> dict:
 
     for row in tracked:
         pl_id = row["jellyfin_playlist_id"]
+        u_id  = row["user_id"]
         u_name = row["username"]
         m_key = row["mix_key"]
         label = f"{u_name} / {m_key} ({pl_id})"
 
         try:
-            await jf_client.set_playlist_access(pl_id, is_public=False)
+            await jf_client.set_playlist_access(pl_id, u_id, is_public=False)
             results["total_fixed"] += 1
             results["details"].append(f"✅ Fixed: {label}")
             logger.info(f"fix_all_playlist_access: set IsPublic=false on {label}")

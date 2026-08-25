@@ -62,3 +62,21 @@ async def test_jellyfin_create_and_update_playlist():
 
         await client.update_playlist_items("pl_123", "user_1", ["t3", "t4"])
         mock_del.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_jellyfin_set_playlist_access():
+    client = JellyfinClient(base_url="http://127.0.0.1:8096", api_key="valid_token")
+    req = httpx.Request("POST", "http://127.0.0.1:8096")
+    mock_resp = httpx.Response(204, request=req)
+
+    with patch("httpx.AsyncClient.post", new_callable=AsyncMock) as mock_post:
+        mock_post.return_value = mock_resp
+
+        await client.set_playlist_access("pl_123", "u_456", is_public=False)
+
+        mock_post.assert_called_once()
+        call_args = mock_post.call_args
+        assert "pl_123" in call_args[0][0]
+        assert call_args[1]["params"] == {"userId": "u_456"}
+        assert call_args[1]["json"] == {"IsPublic": False}

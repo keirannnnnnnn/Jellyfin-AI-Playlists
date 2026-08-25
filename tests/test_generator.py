@@ -221,3 +221,39 @@ async def test_generator_overlapping_run_rejected(tmp_path: Path):
     assert result["status"] == "already_running"
     assert result["run_id"] is None
     assert "already in progress" in result["error"].lower()
+
+
+@pytest.mark.asyncio
+async def test_fix_all_playlist_access(tmp_path: Path):
+    """Test retroactive patching of all tracked playlists in user_playlist_state."""
+    from app.services.generator_service import fix_all_playlist_access
+
+    db_file = tmp_path / "gen_fix_access_test.db"
+    init_db(db_file)
+
+    # Seed users and user_playlist_state
+    with get_db(db_file) as conn:
+        cursor = conn.cursor()
+        cursor.execute("INSERT INTO users (jellyfin_user_id, username, enabled) VALUES ('u_1', 'Alice', 1);")
+        cursor.execute("INSERT INTO users (jellyfin_user_id, username, enabled) VALUES ('u_2', 'Bob', 1);")
+        cursor.execute("""
+            INSERT INTO user_playlist_state (user_id, mix_key, jellyfin_playlist_id, last_status)
+            VALUES ('u_1', 'pop', 'pl_pop_1', 'generated');
+        """)
+        cursor.execute("""
+            INSERT INTO user_playlist_state (user_id, mix_key, jellyfin_playlist_id, last_status)
+            VALUES ('u_2', 'rock', 'pl_rock_2', 'generated');
+        """)
+
+    with patch("app.services.generator_service.JellyfinClient.set_playlist_access", new_callable=AsyncMock) as mock_set_access:
+        mock_set_access.return_value = None
+
+        res = await fix_all_playlist_access(db_file=db_file)
+
+        assert res["total_fixed"] == 2
+        assert res["already_gone"] == 0
+        assert res["errors"] == 0
+        assert mock_set_access.call_count == 2
+        # Verify calls passed (playlist_id, user_id, is_public=False)
+        mock_set_access.assert_any_call("pl_pop_1", "u_1", is_public=False)
+        mock_set_access.assert_any_call("pl_rock_2", "u_2", is_public=False)

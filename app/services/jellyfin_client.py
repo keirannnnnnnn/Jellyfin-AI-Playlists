@@ -383,7 +383,7 @@ class JellyfinClient:
             data = resp.json()
             return data["Id"]
 
-    async def set_playlist_access(self, playlist_id: str, is_public: bool = False) -> None:
+    async def set_playlist_access(self, playlist_id: str, user_id: str, is_public: bool = False) -> None:
         """Set the public/private access flag on an existing playlist.
 
         Uses POST /Playlists/{playlistId} (UpdatePlaylist) with UpdatePlaylistDto.
@@ -391,17 +391,27 @@ class JellyfinClient:
           Name (nullable), Ids (nullable), Users (nullable), IsPublic (nullable bool).
         Fields set to null are not changed; we only touch IsPublic.
 
-        Call this:
-        - After create_playlist (belt-and-suspenders in case Jellyfin ignores IsPublic
-          on create in some versions).
-        - As a retroactive fix on already-created playlists that were left public.
+        ROOT CAUSE of prior 400 errors (confirmed from Jellyfin issue #12092):
+          PlaylistsController.UpdatePlaylist() internally calls
+          PlaylistManager.GetPlaylistForUser(playlistId, userId).
+          When using a global API key (not a user session token), Jellyfin cannot
+          resolve userId from the auth context → userId = Guid.Empty →
+          UserManager.GetUserById(Guid.Empty) throws ArgumentException:
+          "Guid can't be empty" → 400 Bad Request.
+        FIX: pass userId as a query parameter so Jellyfin can resolve the caller.
         """
         async with httpx.AsyncClient(timeout=self.timeout) as client:
             resp = await client.post(
                 f"{self.base_url}/Playlists/{playlist_id}",
                 headers=self._get_headers(),
+                params={"userId": user_id},
                 json={"IsPublic": is_public},
             )
+            if not resp.is_success:
+                logger.error(
+                    f"set_playlist_access failed for playlist={playlist_id} user={user_id}: "
+                    f"HTTP {resp.status_code} — {resp.text}"
+                )
             resp.raise_for_status()
 
     async def update_playlist_items(self, playlist_id: str, user_id: str, item_ids: list[str]) -> None:
