@@ -559,3 +559,25 @@ class JellyfinClient:
             except Exception as e:
                 logger.error(f"Error setting playlist image for {playlist_id}: {e}")
                 return False
+
+    async def delete_playlist(self, playlist_id: str) -> bool:
+        """Delete a playlist from Jellyfin using DELETE /Items/{playlistId}."""
+        headers = await self._get_session_headers()
+        async with httpx.AsyncClient(timeout=self.timeout) as client:
+            resp = await client.delete(
+                f"{self.base_url}/Items/{playlist_id}",
+                headers=headers,
+            )
+            if resp.status_code == 401 and self.username:
+                await self.get_session_token(force_refresh=True)
+                headers = await self._get_session_headers()
+                resp = await client.delete(
+                    f"{self.base_url}/Items/{playlist_id}",
+                    headers=headers,
+                )
+            if resp.status_code in (200, 204, 404):
+                return True
+            if not resp.is_success:
+                logger.error(f"delete_playlist failed for {playlist_id} ({resp.status_code}): {resp.text}")
+            resp.raise_for_status()
+            return True

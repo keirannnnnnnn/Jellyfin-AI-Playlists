@@ -162,3 +162,27 @@ async def test_jellyfin_set_playlist_access_and_get_playlist():
         # Test get_playlist
         pl_data = await client.get_playlist("pl_123")
         assert pl_data["OpenAccess"] is False
+
+
+@pytest.mark.asyncio
+async def test_jellyfin_delete_playlist():
+    client = JellyfinClient(
+        base_url="http://127.0.0.1:8096",
+        api_key="valid_token",
+        username="admin",
+        password="secretpassword",
+    )
+    req = httpx.Request("POST", "http://127.0.0.1:8096")
+    mock_auth_resp = httpx.Response(200, json={"AccessToken": "sess_token_123"}, request=req)
+    mock_del_resp = httpx.Response(204, request=req)
+
+    with patch("httpx.AsyncClient.post", new_callable=AsyncMock) as mock_post, \
+         patch("httpx.AsyncClient.delete", new_callable=AsyncMock) as mock_del:
+
+        mock_post.return_value = mock_auth_resp
+        mock_del.return_value = mock_del_resp
+
+        ok = await client.delete_playlist("pl_old_123")
+        assert ok is True
+        mock_del.assert_called_once()
+        assert "Items/pl_old_123" in mock_del.call_args[0][0]

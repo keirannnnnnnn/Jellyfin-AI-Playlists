@@ -225,7 +225,7 @@ async def test_generator_overlapping_run_rejected(tmp_path: Path):
 
 @pytest.mark.asyncio
 async def test_fix_all_playlist_access(tmp_path: Path):
-    """Test retroactive patching of all tracked playlists in user_playlist_state."""
+    """Test retroactive enforcement of OpenAccess: false on all tracked playlists."""
     from app.services.generator_service import fix_all_playlist_access
 
     db_file = tmp_path / "gen_fix_access_test.db"
@@ -234,26 +234,57 @@ async def test_fix_all_playlist_access(tmp_path: Path):
     # Seed users and user_playlist_state
     with get_db(db_file) as conn:
         cursor = conn.cursor()
-        cursor.execute("INSERT INTO users (jellyfin_user_id, username, enabled) VALUES ('u_1', 'Alice', 1);")
-        cursor.execute("INSERT INTO users (jellyfin_user_id, username, enabled) VALUES ('u_2', 'Bob', 1);")
+        cursor.execute("INSERT INTO users (jellyfin_user_id, username, enabled) VALUES ('u_admin', 'Admin', 1);")
+        cursor.execute("INSERT INTO users (jellyfin_user_id, username, enabled) VALUES ('u_user2', 'Chris', 1);")
         cursor.execute("""
             INSERT INTO user_playlist_state (user_id, mix_key, jellyfin_playlist_id, last_status)
-            VALUES ('u_1', 'pop', 'pl_pop_1', 'generated');
+            VALUES ('u_admin', 'pop', 'pl_admin_pop', 'generated');
         """)
         cursor.execute("""
             INSERT INTO user_playlist_state (user_id, mix_key, jellyfin_playlist_id, last_status)
-            VALUES ('u_2', 'rock', 'pl_rock_2', 'generated');
+            VALUES ('u_user2', 'rock', 'pl_chris_rock_old', 'generated');
         """)
 
-    with patch("app.services.generator_service.JellyfinClient.set_playlist_access", new_callable=AsyncMock) as mock_set_access:
-        mock_set_access.return_value = None
+    with patch("app.services.generator_service.JellyfinClient.get_playlist", new_callable=AsyncMock) as mock_get_pl, \
+         patch("app.services.generator_service.JellyfinClient.set_playlist_access", new_callable=AsyncMock) as mock_set_access, \
+         patch("app.services.generator_service.JellyfinClient.delete_playlist", new_callable=AsyncMock) as mock_del_pl, \
+         patch("app.services.generator_service.JellyfinClient.create_playlist", new_callable=AsyncMock) as mock_create_pl:
+
+        async def side_effect_get_playlist(pl_id):
+            if pl_id == "pl_admin_pop":
+                # Admin playlist: currently public, but in-place patch succeeds
+                return {"OpenAccess": False, "ItemIds": ["t1", "t2"]}
+            if pl_id == "pl_chris_rock_old":
+                # Chris's playlist: currently public
+                return {"OpenAccess": True, "ItemIds": ["t3", "t4"]}
+            if pl_id == "pl_chris_rock_new":
+                # Recreated playlist
+                return {"OpenAccess": False, "ItemIds": ["t3", "t4"]}
+            return {"OpenAccess": False, "ItemIds": []}
+
+        async def side_effect_set_access(pl_id, u_id, is_public=False):
+            if pl_id == "pl_chris_rock_old":
+                # Fails with 403 on non-admin playlist
+                raise Exception("403 Forbidden")
+            return None
+
+        mock_get_pl.side_effect = side_effect_get_playlist
+        mock_set_access.side_effect = side_effect_set_access
+        mock_del_pl.return_value = True
+        mock_create_pl.return_value = "pl_chris_rock_new"
 
         res = await fix_all_playlist_access(db_file=db_file)
 
         assert res["total_fixed"] == 2
         assert res["already_gone"] == 0
         assert res["errors"] == 0
-        assert mock_set_access.call_count == 2
-        # Verify calls passed (playlist_id, user_id, is_public=False)
-        mock_set_access.assert_any_call("pl_pop_1", "u_1", is_public=False)
-        mock_set_access.assert_any_call("pl_rock_2", "u_2", is_public=False)
+
+        # Chris's old playlist should have been deleted and recreated
+        mock_del_pl.assert_called_once_with("pl_chris_rock_old")
+        mock_create_pl.assert_called_once_with("Rock Mix", "u_user2", ["t3", "t4"])
+
+        # DB must have updated Chris's playlist ID to the new one
+        with get_db(db_file) as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT jellyfin_playlist_id FROM user_playlist_state WHERE user_id='u_user2' AND mix_key='rock';")
+            assert cursor.fetchone()["jellyfin_playlist_id"] == "pl_chris_rock_new"

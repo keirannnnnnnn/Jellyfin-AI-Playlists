@@ -558,10 +558,14 @@ async def push_all_mix_icons(db_file: Path | str = DB_PATH) -> dict:
 
 
 async def fix_all_playlist_access(db_file: Path | str = DB_PATH) -> dict:
-    """Retroactively set IsPublic=false and OpenAccess=false on every playlist tracked in user_playlist_state.
+    """Retroactively enforce IsPublic=false and OpenAccess=false on every tracked playlist.
 
-    Uses an authenticated admin session token to update each playlist and verify
-    that OpenAccess reads false.
+    For playlists where in-place access update succeeds (e.g. admin's own playlists),
+    it updates them in-place and verifies OpenAccess: false.
+    For non-admin playlists where in-place update returns 403 Forbidden (due to Jellyfin
+    ownership enforcement), it deletes the exposed playlist via admin session, recreates
+    it fresh via create_playlist (which sets OpenAccess: false / IsPublic: false), re-applies
+    the mix icon, updates user_playlist_state with the new ID, and verifies OpenAccess: false.
     """
     settings = get_all_settings(db_file)
     jf_client = JellyfinClient(
@@ -570,6 +574,9 @@ async def fix_all_playlist_access(db_file: Path | str = DB_PATH) -> dict:
         username=settings.get("jellyfin_username", ""),
         password=settings.get("jellyfin_password", ""),
     )
+
+    mixes = get_mix_definitions(db_file)
+    mix_map = {m["mix_key"]: m for m in mixes}
 
     results = {
         "total_fixed": 0,
@@ -591,44 +598,98 @@ async def fix_all_playlist_access(db_file: Path | str = DB_PATH) -> dict:
         )
         tracked = [dict(row) for row in cursor.fetchall()]
 
-    logger.info(f"fix_all_playlist_access: patching {len(tracked)} tracked playlists.")
+    logger.info(f"fix_all_playlist_access: inspecting & fixing {len(tracked)} tracked playlists.")
 
     for row in tracked:
         pl_id = row["jellyfin_playlist_id"]
         u_id = row["user_id"]
         u_name = row["username"]
         m_key = row["mix_key"]
-        label = f"{u_name} / {m_key} ({pl_id})"
+        mix_def = mix_map.get(m_key, {})
+        m_name = mix_def.get("display_name", f"{m_key.title()} Mix")
+        label = f"{u_name} / {m_name} ({pl_id})"
 
         try:
-            await jf_client.set_playlist_access(pl_id, u_id, is_public=False)
-            
-            # Verify OpenAccess status
+            # 1. Fetch current live playlist details
+            pl_data = None
             try:
-                details = await jf_client.get_playlist(pl_id)
-                open_access = details.get("OpenAccess")
-                if open_access is False:
-                    results["total_fixed"] += 1
-                    results["details"].append(f"✅ Fixed & verified private (OpenAccess: false): {label}")
-                else:
-                    results["total_fixed"] += 1
-                    results["details"].append(f"✅ Updated (OpenAccess: {open_access}): {label}")
-            except Exception:
-                results["total_fixed"] += 1
-                results["details"].append(f"✅ Updated access: {label}")
+                pl_data = await jf_client.get_playlist(pl_id)
+            except Exception as get_err:
+                if "404" in str(get_err) or "Not Found" in str(get_err):
+                    results["already_gone"] += 1
+                    results["details"].append(f"⚠️ Not found (already deleted): {label}")
+                    logger.debug(f"fix_all_playlist_access: {label} returned 404, skipping.")
+                    continue
+                raise
 
-            logger.info(f"fix_all_playlist_access: set IsPublic=false / OpenAccess=false on {label}")
+            # 2. Check if already private
+            if pl_data.get("OpenAccess") is False:
+                results["total_fixed"] += 1
+                results["details"].append(f"✅ Already private (OpenAccess: false): {label}")
+                logger.info(f"fix_all_playlist_access: {label} already has OpenAccess=false")
+                continue
+
+            # 3. Try in-place update first (succeeds on admin's playlists)
+            in_place_success = False
+            try:
+                await jf_client.set_playlist_access(pl_id, u_id, is_public=False)
+                check_data = await jf_client.get_playlist(pl_id)
+                if check_data.get("OpenAccess") is False:
+                    in_place_success = True
+                    results["total_fixed"] += 1
+                    results["details"].append(f"✅ Updated in-place & verified private (OpenAccess: false): {label}")
+                    logger.info(f"fix_all_playlist_access: in-place patch succeeded for {label}")
+            except Exception as patch_err:
+                logger.info(f"fix_all_playlist_access: in-place patch failed ({patch_err}); switching to delete+recreate for {label}")
+
+            if in_place_success:
+                continue
+
+            # 4. In-place update failed (e.g. 403 Forbidden on non-admin user playlists).
+            # Delete old public playlist and recreate fresh with OpenAccess: false.
+            track_ids = pl_data.get("ItemIds", []) if pl_data else []
+            logger.info(f"fix_all_playlist_access: deleting old public playlist {pl_id} for {label} ({len(track_ids)} tracks)")
+            await jf_client.delete_playlist(pl_id)
+
+            # Recreate with OpenAccess: false
+            new_pl_id = await jf_client.create_playlist(m_name, u_id, track_ids)
+            logger.info(f"fix_all_playlist_access: created fresh private playlist {new_pl_id} for {label}")
+
+            # Reapply mix icon if configured
+            icon_bytes, content_type = load_icon_bytes(mix_def.get("icon_path"))
+            if icon_bytes:
+                try:
+                    await jf_client.set_playlist_image(new_pl_id, icon_bytes, content_type)
+                except Exception as img_err:
+                    logger.warning(f"Failed to reapply icon to {new_pl_id}: {img_err}")
+
+            # Update DB with new playlist ID
+            with get_db(db_file) as conn:
+                cursor = conn.cursor()
+                cursor.execute(
+                    """
+                    UPDATE user_playlist_state
+                    SET jellyfin_playlist_id = ?
+                    WHERE user_id = ? AND mix_key = ?;
+                    """,
+                    (new_pl_id, u_id, m_key),
+                )
+
+            # Verify new playlist has OpenAccess: false
+            new_pl_data = await jf_client.get_playlist(new_pl_id)
+            verified_open = new_pl_data.get("OpenAccess")
+            if verified_open is False:
+                results["total_fixed"] += 1
+                results["details"].append(f"✅ Recreated & verified private (OpenAccess: false): {u_name} / {m_name} (New ID: {new_pl_id})")
+            else:
+                results["total_fixed"] += 1
+                results["details"].append(f"✅ Recreated (OpenAccess: {verified_open}): {u_name} / {m_name} (New ID: {new_pl_id})")
+
         except Exception as e:
             err_str = str(e)
-            # 404 means the playlist was already deleted — not a real error
-            if "404" in err_str or "Not Found" in err_str.lower():
-                results["already_gone"] += 1
-                results["details"].append(f"⚠️ Not found (skipped): {label}")
-                logger.debug(f"fix_all_playlist_access: {label} returned 404, skipping.")
-            else:
-                results["errors"] += 1
-                results["details"].append(f"❌ Error: {label} — {err_str}")
-                logger.error(f"fix_all_playlist_access: failed to patch {label}: {e}")
+            results["errors"] += 1
+            results["details"].append(f"❌ Error: {label} — {err_str}")
+            logger.error(f"fix_all_playlist_access: failed to fix {label}: {e}", exc_info=True)
 
     logger.info(
         f"fix_all_playlist_access complete: "
